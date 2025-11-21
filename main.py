@@ -56,7 +56,7 @@ def search_web(query: str):
     """Search the web"""
     return f"Search result placeholder for: {query}"
 
-tools_list = [search_web, google_search_tool]
+tools_list = [google_search_tool]
 
 # Enable switching to pro model 
 @wrap_model_call
@@ -66,43 +66,30 @@ def model_selection(request: ModelRequest, handler):
 
     # Choose larger model for longer conversations 
     if message_count > 10:
-        model = advanced_model
-    else:
-        model = basic_model
-
-    return handler(request.override(model=model))
-
-def get_chat_model(state: dict):
-    """
-    Dynamically selects the model based on message history length.
-    """
-    messages = state.get("messages", [])
-    
-    # If conversation is long (>10 messages), use Pro, otherwise Flash
-    if len(messages) > 10:
         print(f"Selecting Advanced Model ({advanced_model})")
         model_name = advanced_model
     else:
         print(f"Selecting Basic Model ({basic_model})")
         model_name = basic_model
 
-    return ChatVertexAI(
+    model = ChatVertexAI(
         model_name=model_name,
         temperature=1.0,
         max_output_tokens=1000,
         top_p=0.95,
         safety_settings=safety_settings
-    ).bind_tools(tools_list)
+    )
 
+    return handler(request.override(model=model))
 
 # Create agent
 agent = create_agent(
-    get_chat_model, 
-    tools=tools_list, 
+    basic_model, 
+    tools=tools_list,
     middleware=[model_selection])
 
 result = agent.invoke(
-    {"messages": [{"role": "user", "content": "What's the weather in San Francisco?"}]}
+    {"messages": [{"role": "user", "content": "Who won the nobel prize in Physics in 2025?"}]}
 )
 
-print(result)
+print(result["messages"][-1].content)
