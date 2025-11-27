@@ -1,9 +1,10 @@
 from langchain_google_vertexai import HarmBlockThreshold, HarmCategory
 from langchain_google_vertexai import ChatVertexAI
-from langchain_google_community import GoogleSearchAPIWrapper
+from langchain_google_community import VertexAISearchRetriever
 from langchain.agents import create_agent
 from langchain_core.tools import tool, Tool
 from langchain.agents.middleware import wrap_model_call, ModelRequest, ModelResponse
+from langchain_classic.tools.retriever import create_retriever_tool
 import os
 from dotenv import load_dotenv
 
@@ -11,6 +12,7 @@ load_dotenv()
 
 project_id = 'dash-beta-e61d0'
 location = 'europe-west1'
+data_store_unstructured = 'unstructured-docume_1762271574972'
 
 GOOGLE_API_KEY = os.getenv('GOOGLE_API_KEY')
 GOOGLE_CSE_ID = os.getenv('GOOGLE_CSE_ID')
@@ -52,7 +54,33 @@ def search_web(query: str):
     """Search the web"""
     return f"Search result placeholder for: {query}"
 
-tools_list = []
+vertex_retriever = VertexAISearchRetriever(
+    project_id=project_id,
+    location_id=location,
+    data_store_id=data_store_unstructured,
+    max_documents=10
+)
+
+# def search_documents(query):
+#     """Searches BigQuery and GCS Pdfs to gain information from relevant documents"""
+#     VertexRetriever = VertexAISearchRetriever(
+#         project_id=project_id,
+#         location_id=location,
+#         data_store_id=data_store_unstructured,
+#         max_documents=10
+#     )
+
+#     result=str(VertexRetriever.invoke(query))
+#     return result
+
+# Then, we wrap it in a LangChain Tool using the create_retriever_tool utility.
+vertex_doc_search_tool = create_retriever_tool(
+    vertex_retriever,
+    "vertex_doc_search",
+    "Searches BigQuery and GCS PDFs for internal document information, like consumption data."
+)
+
+tools_list = [{"google_search": {}}, vertex_doc_search_tool]
 
 # Enable switching to pro model 
 @wrap_model_call
@@ -76,11 +104,10 @@ def model_selection(request: ModelRequest, handler):
         top_p=model_kwargs.get('top_p'),
         top_k=model_kwargs.get('top_k'),
         # safety_settings=model_kwargs.get('safety_settings'),
-    ).bind_tools([{"google_search": {}}])
+    ).bind_tools(tools_list)
 
     return handler(request.override(model=model))
 
-# Bind model to google search
 llm = ChatVertexAI(
     model_name=basic_model,
     temperature=model_kwargs.get('temperature'),
@@ -88,7 +115,7 @@ llm = ChatVertexAI(
     top_p=model_kwargs.get('top_p'),
     top_k=model_kwargs.get('top_k'),
     # safety_settings=model_kwargs.get('safety_settings'),
-).bind_tools([{"google_search": {}}])
+).bind_tools(tools_list)
 
 # Create agent
 agent = create_agent(
@@ -97,7 +124,7 @@ agent = create_agent(
     middleware=[model_selection])
 
 result = agent.invoke(
-    {"messages": [{"role": "user", "content": "Who won the nobel prize in Physics in 2025?"}]}
+    {"messages": [{"role": "user", "content": "Give me the electricity consumption from March 2024"}]}
 )
 
 print(result["messages"][-1].content)
