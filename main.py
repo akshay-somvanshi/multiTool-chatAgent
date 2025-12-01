@@ -9,6 +9,8 @@ import os
 from dotenv import load_dotenv
 from google.api_core.client_options import ClientOptions
 from google.cloud import discoveryengine_v1 as discoveryengine
+from pydantic import BaseModel, Field
+from typing import Literal
 
 load_dotenv()
 
@@ -68,21 +70,69 @@ google_search_tool = Tool(
     func=search_wrapper.run,
 )
 
-# vertex_retriever = VertexAISearchRetriever(
-#     project_id=project_id,
-#     location_id=location,
-#     data_store_id="unstructured-docume_1762271574972_unstruct_document_search_view",
-#     max_documents=10
-# )
-
 search_query = "Get me the electricity bill"
 
+class search_input(BaseModel):
+    """Input for searching through Vertex AI search"""
+    project_id: str = Field(
+        description='The Google Cloud project ID containing the search engine.',
+        default=project_id
+    )
+    location: str = Field(
+        description='The multi-region or regional identifier where the search engine is hosted.',
+        default=location
+    )
+    engine_id: str = Field(
+        description='The ID of the Vertex AI Search App (Engine) used for blended search.',
+        default=engine_id
+    )
+    search_query: str = Field(
+        description='The natural language query to search against the data stores'
+    )
+
+@tool(args_schema=search_input)
 def search_sample(
-    project_id: str,
-    location: str,
-    engine_id: str,
     search_query: str,
+    project_id: str = project_id,
+    location: str = location,
+    engine_id: str = engine_id,
 ) -> discoveryengine.services.search_service.pagers.SearchPager:
+    """
+    Performs a blended search against a Vertex AI Search (Discovery Engine)
+    Search App, leveraging its serving configuration to retrieve and summarize
+    search results across multiple data stores.
+
+    This function uses the native Google Cloud SDK to execute a search
+    request, including options for snippet retrieval and result summarization.
+
+    Parameters
+    ----------
+    search_query : str
+        The natural language query to search against the data stores (e.g.,
+        "What is the energy consumption in March 2024?").
+    project_id : str
+        The Google Cloud project ID containing the search engine.
+    location : str
+        The multi-region or regional identifier where the search engine is hosted
+        (e.g., 'global', 'us', 'eu').
+    engine_id : str
+        The ID of the Vertex AI Search App (Engine) used for blended search.
+
+    Returns
+    -------
+    google.cloud.discoveryengine_v1.services.search_service.pagers.SearchPager
+        A pager object containing the search results, including snippets,
+        hits, and the final summary (if requested).
+
+    Raises
+    ------
+    google.api_core.exceptions.InvalidArgument
+        If the request contains invalid parameters (e.g., trying to use
+        query expansion with multi-datastore search).
+    google.api_core.exceptions.NotFound
+        If the serving config path based on project_id, location, and engine_id
+        is incorrect.
+    """
     #  For more information, refer to:
     # https://cloud.google.com/generative-ai-app-builder/docs/locations#specify_a_multi-region_for_your_data_store
     client_options = (
@@ -112,7 +162,7 @@ def search_sample(
             ignore_adversarial_query=True,
             ignore_non_summary_seeking_query=True,
             model_prompt_spec=discoveryengine.SearchRequest.ContentSearchSpec.SummarySpec.ModelPromptSpec(
-                preamble="CUSTOM_PROMPT"
+                preamble="You are an expert analyst. Your task is to extract precise energy consumption data (in kWh) and the corresponding billing period start/end dates from the provided search results. If data is not available, state the closest available consumption data."
             ),
             model_spec=discoveryengine.SearchRequest.ContentSearchSpec.SummarySpec.ModelSpec(
                 version="stable",
@@ -139,28 +189,28 @@ def search_sample(
 
     # Extract the summary result, which is what the LLM needs
     search_summary = page_result.summary.summary_text if page_result.summary else "No relevant search results found."
+    # print(page_result._response)
+    # print(search_summary)
     
     # Include the citations/results for context
     # citations = "\n".join([c.uri for c in page_result.summary.CitationMetadata.citations]) if page_result.summary and page_result.summary.CitationMetadata else ""
 
     # Handle the response
-    for response in page_result:
-        print(response)
+    # for response in page_result:
+    #     print(response)
     
     # Return the summary text for the LLM to use
-    return f"Summary from internal documents: {search_summary}\nCitations: "
+    return f"Result from internal documents: {page_result._response}\nCitations: "
 
-search_sample(project_id, location, engine_id, search_query)
+# Then, we wrap it in a LangChain Tool.
+vertex_search_tool = Tool.from_function(
+    func=lambda query: search_sample(query, project_id, location, engine_id),
+    name="vertex_doc_search",
+    description="Searches the internal Vertex AI Search App (blended data stores) for information on consumption, plans, and company documents. Use this for specific internal data.",
+    args_schema=search_input
+)
 
-# Then, we wrap it in a LangChain Tool using the create_retriever_tool utility.
-# vertex_doc_search_tool = create_retriever_tool(
-#     vertex_retriever,
-#     "vertex_doc_search",
-#     "Searches BigQuery and GCS PDFs for internal document information, like consumption data."
-# )
-
-# tools_list = [google_search_tool, vertex_doc_search_tool]
-tools_list = [google_search_tool]
+tools_list = [google_search_tool, search_sample]
 
 # Enable switching to pro model 
 @wrap_model_call
@@ -202,11 +252,12 @@ agent = create_agent(
     llm,
     tools=tools_list,
     system_prompt=system_instruction,
+    context_schema=search_input
     # middleware=[model_selection]
 )
 
 result = agent.invoke(
-    {"messages": [{"role": "user", "content": "What is the energy consumption in March 2024?"}]}
+    {"messages": [{"role": "user", "content": "Provide the consumption from the electricity bill document"}]}
 )
 
 print(result["messages"][-1].content)
