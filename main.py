@@ -1,18 +1,22 @@
 from langchain_google_vertexai import HarmBlockThreshold, HarmCategory
 from langchain_google_vertexai import ChatVertexAI
-from langchain_google_community import VertexAISearchRetriever
+from langchain_google_community import VertexAISearchRetriever, GoogleSearchAPIWrapper
 from langchain.agents import create_agent
 from langchain_core.tools import tool, Tool
 from langchain.agents.middleware import wrap_model_call, ModelRequest, ModelResponse
 from langchain_classic.tools.retriever import create_retriever_tool
 import os
 from dotenv import load_dotenv
+from google.api_core.client_options import ClientOptions
+from google.cloud import discoveryengine_v1 as discoveryengine
 
 load_dotenv()
 
 project_id = 'dash-beta-e61d0'
-location = 'europe-west1'
-data_store_unstructured = 'unstructured-docume_1762271574972'
+location = 'eu'
+os.environ['GOOGLE_CLOUD_QUOTA_PROJECT'] = project_id
+# The ID of the Search App (Engine) that blends the data stores
+engine_id = 'dashbetasearch_1761558631078'
 
 GOOGLE_API_KEY = os.getenv('GOOGLE_API_KEY')
 GOOGLE_CSE_ID = os.getenv('GOOGLE_CSE_ID')
@@ -30,10 +34,12 @@ safety_settings = {
 }
 
 system_instruction = (
-    "You are a helpful assistant. Always use the 'google_search' tool for any questions "
-    "related to current events, future events, or any information that changes over time "
-    "such as news, weather, or real-time facts. Only answer from your internal knowledge "
-    "if the information is general or timeless (e.g., historical facts). Start every answer with 'Doh!' "
+    "You are a helpful assistant. For ANY question about events, prizes, awards, "
+    "current information, or anything that may have occurred recently, you MUST use "
+    "the 'google_search' tool FIRST before answering. Never answer questions about "
+    "recent events from your training data alone. If you're unsure whether something "
+    "is recent, use google_search to verify. Use the 'vertex_doc_search' tool for questions "
+    "about internal documents, like consumption data. Start every answer with 'Doh!' "
 )
 
 model_kwargs = {
@@ -45,42 +51,116 @@ model_kwargs = {
     "top_p": 0.95,
     # Top k - next token selected among top-k 
     "top_k": None,
-    "safety_settings": safety_settings,
-    "system_instruction": system_instruction,
+    "safety_settings": safety_settings
 }
 
-@tool
-def search_web(query: str):
-    """Search the web"""
-    return f"Search result placeholder for: {query}"
+search_wrapper = GoogleSearchAPIWrapper()
 
-vertex_retriever = VertexAISearchRetriever(
-    project_id=project_id,
-    location_id=location,
-    data_store_id=data_store_unstructured,
-    max_documents=10
+def logged_search(query):
+    print(f"Google called with query: {query}")
+    result = search_wrapper.run(query)
+    print(f"Search result: {result[:200]}...")
+    return result
+
+google_search_tool = Tool(
+    name="google_search",  # The name the LLM calls
+    description="Search Google for current events and real-time facts.",
+    func=search_wrapper.run,
 )
 
-# def search_documents(query):
-#     """Searches BigQuery and GCS Pdfs to gain information from relevant documents"""
-#     VertexRetriever = VertexAISearchRetriever(
-#         project_id=project_id,
-#         location_id=location,
-#         data_store_id=data_store_unstructured,
-#         max_documents=10
-#     )
+# vertex_retriever = VertexAISearchRetriever(
+#     project_id=project_id,
+#     location_id=location,
+#     data_store_id="unstructured-docume_1762271574972_unstruct_document_search_view",
+#     max_documents=10
+# )
 
-#     result=str(VertexRetriever.invoke(query))
-#     return result
+search_query = "Get me the electricity bill"
+
+def search_sample(
+    project_id: str,
+    location: str,
+    engine_id: str,
+    search_query: str,
+) -> discoveryengine.services.search_service.pagers.SearchPager:
+    #  For more information, refer to:
+    # https://cloud.google.com/generative-ai-app-builder/docs/locations#specify_a_multi-region_for_your_data_store
+    client_options = (
+        ClientOptions(api_endpoint=f"{location}-discoveryengine.googleapis.com")
+        if location != "global"
+        else None
+    )
+
+    # Create a client
+    client = discoveryengine.SearchServiceClient(client_options=client_options)
+
+    # The full resource name of the search app serving config
+    serving_config = f"projects/{project_id}/locations/{location}/collections/default_collection/engines/{engine_id}/servingConfigs/default_config"
+
+    # Optional - only supported for unstructured data: Configuration options for search.
+    # Refer to the `ContentSearchSpec` reference for all supported fields:
+    # https://cloud.google.com/python/docs/reference/discoveryengine/latest/google.cloud.discoveryengine_v1.types.SearchRequest.ContentSearchSpec
+    content_search_spec = discoveryengine.SearchRequest.ContentSearchSpec(
+        # reference: https://cloud.google.com/generative-ai-app-builder/docs/snippets
+        snippet_spec=discoveryengine.SearchRequest.ContentSearchSpec.SnippetSpec(
+            return_snippet=True
+        ),
+        # reference: https://cloud.google.com/generative-ai-app-builder/docs/get-search-summaries
+        summary_spec=discoveryengine.SearchRequest.ContentSearchSpec.SummarySpec(
+            summary_result_count=5,
+            include_citations=True,
+            ignore_adversarial_query=True,
+            ignore_non_summary_seeking_query=True,
+            model_prompt_spec=discoveryengine.SearchRequest.ContentSearchSpec.SummarySpec.ModelPromptSpec(
+                preamble="CUSTOM_PROMPT"
+            ),
+            model_spec=discoveryengine.SearchRequest.ContentSearchSpec.SummarySpec.ModelSpec(
+                version="stable",
+            ),
+        ),
+    )
+
+    # reference: https://cloud.google.com/python/docs/reference/discoveryengine/latest/google.cloud.discoveryengine_v1.types.SearchRequest
+    request = discoveryengine.SearchRequest(
+        serving_config=serving_config,
+        query=search_query,
+        page_size=10,
+        content_search_spec=content_search_spec,
+        spell_correction_spec=discoveryengine.SearchRequest.SpellCorrectionSpec(
+            mode=discoveryengine.SearchRequest.SpellCorrectionSpec.Mode.AUTO
+        ),
+        # Optional: Use fine-tuned model for this request
+        # custom_fine_tuning_spec=discoveryengine.CustomFineTuningSpec(
+        #     enable_search_adaptor=True
+        # ),
+    )
+
+    page_result = client.search(request)
+
+    # Extract the summary result, which is what the LLM needs
+    search_summary = page_result.summary.summary_text if page_result.summary else "No relevant search results found."
+    
+    # Include the citations/results for context
+    # citations = "\n".join([c.uri for c in page_result.summary.CitationMetadata.citations]) if page_result.summary and page_result.summary.CitationMetadata else ""
+
+    # Handle the response
+    for response in page_result:
+        print(response)
+    
+    # Return the summary text for the LLM to use
+    return f"Summary from internal documents: {search_summary}\nCitations: "
+
+search_sample(project_id, location, engine_id, search_query)
 
 # Then, we wrap it in a LangChain Tool using the create_retriever_tool utility.
-vertex_doc_search_tool = create_retriever_tool(
-    vertex_retriever,
-    "vertex_doc_search",
-    "Searches BigQuery and GCS PDFs for internal document information, like consumption data."
-)
+# vertex_doc_search_tool = create_retriever_tool(
+#     vertex_retriever,
+#     "vertex_doc_search",
+#     "Searches BigQuery and GCS PDFs for internal document information, like consumption data."
+# )
 
-tools_list = [{"google_search": {}}, vertex_doc_search_tool]
+# tools_list = [google_search_tool, vertex_doc_search_tool]
+tools_list = [google_search_tool]
 
 # Enable switching to pro model 
 @wrap_model_call
@@ -121,10 +201,12 @@ llm = ChatVertexAI(
 agent = create_agent(
     llm,
     tools=tools_list,
-    middleware=[model_selection])
+    system_prompt=system_instruction,
+    # middleware=[model_selection]
+)
 
 result = agent.invoke(
-    {"messages": [{"role": "user", "content": "Give me the electricity consumption from March 2024"}]}
+    {"messages": [{"role": "user", "content": "What is the energy consumption in March 2024?"}]}
 )
 
 print(result["messages"][-1].content)
