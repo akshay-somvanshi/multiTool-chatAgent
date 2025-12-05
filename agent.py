@@ -33,34 +33,35 @@ class agent:
             "safety_settings": self.safety_settings
         }
 
+        # Enable switching to pro model 
+        @wrap_model_call
+        def _model_selection(request: ModelRequest, handler):
+            """Choose model based on conversation complexity"""
+            message_count = len(request.state["messages"])
+
+            # Choose larger model for longer conversations 
+            if message_count > 10:
+                # print(f"Selecting Advanced Model ({self.advanced_model})")
+                model_name = self.advanced_model
+            else:
+                # print(f"Selecting Basic Model ({self.basic_model})")
+                model_name = self.basic_model
+            
+            # Bind model to google search
+            model = ChatVertexAI(
+                model_name=model_name,
+                temperature=self.model_kwargs.get('temperature'),
+                max_tokens=self.model_kwargs.get('max_output_tokens'),
+                top_p=self.model_kwargs.get('top_p'),
+                top_k=self.model_kwargs.get('top_k'),
+                # safety_settings=model_kwargs.get('safety_settings'),
+            ).bind_tools(self.tool_list)
+
+            return handler(request.override(model=model))
+
+        self._model_selection = _model_selection
         self.llm = self._create_llm()
         self.agent = self._create_agent(self.llm)
-
-    # Enable switching to pro model 
-    @wrap_model_call
-    def _model_selection(self, request: ModelRequest, handler, tools_list):
-        """Choose model based on conversation complexity"""
-        message_count = len(request.state["messages"])
-
-        # Choose larger model for longer conversations 
-        if message_count > 10:
-            print(f"Selecting Advanced Model ({self.advanced_model})")
-            model_name = self.advanced_model
-        else:
-            print(f"Selecting Basic Model ({self.basic_model})")
-            model_name = self.basic_model
-        
-        # Bind model to google search
-        model = ChatVertexAI(
-            model_name=model_name,
-            temperature=self.model_kwargs.get('temperature'),
-            max_tokens=self.model_kwargs.get('max_output_tokens'),
-            top_p=self.model_kwargs.get('top_p'),
-            top_k=self.model_kwargs.get('top_k'),
-            # safety_settings=model_kwargs.get('safety_settings'),
-        ).bind_tools(self.tool_list)
-
-        return handler(request.override(model=model))
 
     def _create_llm(self):
         llm = ChatVertexAI(
@@ -81,9 +82,8 @@ class agent:
             tools=self.tool_list,
             system_prompt=self.system_prompt,
             context_schema=self.search_input,
-            # middleware=[self._model_selection]
+            middleware=[self._model_selection]
         )
-
         return agent
 
     def get_agent_response(self, agent, query):
