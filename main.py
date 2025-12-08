@@ -2,12 +2,16 @@ from agent import agent
 from classifier import classifier
 from tools import ToolList, search_input
 import os
+import json
 from dotenv import load_dotenv
 
 load_dotenv()
 
 GOOGLE_API_KEY = os.getenv('GOOGLE_API_KEY')
 GOOGLE_CSE_ID = os.getenv('GOOGLE_CSE_ID')
+
+with open("data/planning_questions.json") as qs:
+    plan_questions = json.load(qs)
 
 system_instruction_gen = (
     """You are a Sustainability Knowledge Assistant (General Mode).
@@ -32,11 +36,11 @@ system_instruction_gen = (
     Tone:
     - Friendly, fast, precise.
 
-    Start all answers with 'Doh!' """
+    Start all answers with 'Doh Gen!' """
 )
 
 system_instruction_plan = (
-    """You are a Sustainability Planning Assistant.
+    f"""You are a Sustainability Planning Assistant.
 
     Your responsibilities:
     - Develop structured sustainability plans tailored to a company's context.
@@ -48,7 +52,7 @@ system_instruction_plan = (
     Rules of operation:
     - Before providing a plan or recommendation:
         - Identify the company's sector, region, size, and data availability.
-        - Ask clarifying questions if needed.
+        - Ask relevant questions from this set of questions, tailored to the user: {plan_questions}
     - Use `vertex_doc_search` to retrieve internal utility, cost, consumption, emissions, or compliance data.
     - Use `google_search` when referencing:
         - regulation,
@@ -75,7 +79,7 @@ system_instruction_plan = (
     Tone:
     - Strategic, structured, professional.
 
-    Start all answers with 'Doh!' """
+    Start all answers with 'Doh Plan!' """
 )
 
 system_instruction_act = (
@@ -118,15 +122,19 @@ system_instruction_act = (
     - Try to sound like a consultant giving execution guidance.
     - Concrete language, no abstraction.
 
-    Start every answer with 'Doh!' """
+    Start every answer with 'Doh Act!' """
 )
 
 model = "gemini-2.5-flash"
 
+# Initialise all the LLMs
 tool = ToolList()
 generalist = agent(model, system_instruction_gen, tool.get_tools(), search_input)
-planning = agent(model, system_instruction_gen, tool.get_tools(), search_input)
-action = agent(model, system_instruction_gen, tool.get_tools(), search_input)
+planning = agent(model, system_instruction_plan, tool.get_tools(), search_input)
+action = agent(model, system_instruction_act, tool.get_tools(), search_input)
+
+# Initialise the classifier
+classifier = classifier()
 
 # Test for google tool
 # result1 = generalist.agent.invoke({"messages": [{"role": "user", "content": "Google search who won the nobel prize in physics in 2025?"}]})
@@ -137,5 +145,13 @@ action = agent(model, system_instruction_gen, tool.get_tools(), search_input)
 # result2 = generalist.agent.invoke({"messages": [{"role": "user", "content": "Provide the consumption from the electricity bill document"}]})
 # print(f'Vertex AI search: {result2["messages"][-1].content}')
 
-classifier = classifier()
-print(classifier.invoke("What does CDP mean?"))
+query = "I want to make my sustainability plan"
+mode = classifier.invoke(query)
+
+if mode == "GENERALIST":
+    print(generalist.invoke(query))
+elif mode == "PLANNING":
+    print(planning.invoke(query))
+else:
+    action.invoke(query)
+
