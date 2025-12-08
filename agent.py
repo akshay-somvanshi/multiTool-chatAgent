@@ -86,8 +86,8 @@ class agent:
         )
         return agent
 
-    def get_agent_response(self, agent, query):
-        result = agent.invoke(
+    def invoke(self, query):
+        result = self.agent.invoke(
             {"messages": [{"role": "user", "content": query}]}
         )
 
