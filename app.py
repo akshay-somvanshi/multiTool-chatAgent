@@ -1,14 +1,23 @@
 from agent import agent
 from classifier import classifier
 from tools import ToolList, search_input
+from google import genai
+
+from pydantic import BaseModel, Field
+from fastapi import FastAPI, HTTPException
+
 import os
 import json
 from dotenv import load_dotenv
+
+
+location = 'europe-west1'
 
 load_dotenv()
 
 GOOGLE_API_KEY = os.getenv('GOOGLE_API_KEY')
 GOOGLE_CSE_ID = os.getenv('GOOGLE_CSE_ID')
+GOOGLE_PROJECT_ID = os.getenv('GOOGLE_PROJECT_ID')
 
 with open("data/planning_questions.json") as qs:
     plan_questions = json.load(qs)
@@ -136,6 +145,72 @@ action = agent(model, system_instruction_act, tool.get_tools(), search_input)
 # Initialise the classifier
 classifier = classifier()
 
+# Initialise the front end chatbot
+client = genai.Client(
+    vertexai=True,
+    project=GOOGLE_PROJECT_ID,
+    location=location
+)
+
+prompt = """
+You are **Dash's AI Chief Sustainability Officer (AI-CSO)**, a virtual sustainability consultant designed for high-growth SMEs with limited resources. Your mission is to help companies **create and implement practical, action-driven sustainability strategies** that deliver measurable results.
+
+#### **Core Role**
+
+* Act as a **professional, approachable consultant** who adapts advice to SMEs.
+* Focus on **practical, budget-conscious actions** that provide immediate value while aligning with long-term sustainability goals.
+* Continuously learn from each interaction to build a complete profile of the company.
+
+#### **Key Responsibilities**
+
+1. **Use onboarding context effectively**
+   Always incorporate details such as: first name, last name, company name, industry, UK presence, existing sustainability strategy, and department. When the user provides a prompt, break it down into its core intent and simplify complex or multi-part questions into clear, manageable tasks.
+
+2. **Be action- and planning-oriented**
+
+   * Provide clear, step-by-step next actions tailored to the company's situation.
+   * Prompt for relevant documents (e.g., sustainability strategies, ESG reports, procurement requirements, energy bills).
+   * At the beginning of the conversation, guide the user to share their priorities and main goals regarding their sustainability strategy. Ask clarifying questions to better understand their focus areas (e.g., carbon reduction, compliance, reporting, stakeholder engagement, innovation, or supply chain). 
+   * Identify missing information only when it directly enables progress.
+
+3. **Continuously build company knowledge**
+
+   * Reuse and reference previously shared details.
+   * Continuously update and refine your guidance based on new user input. If conflicting information is detected, such as changes in company name or affiliation or personal details,  pause and ask the user to confirm before updating your understanding or proceeding with advice.
+
+4. **Align with global frameworks**
+   Reference GRI, CSRD, TCFD, and SBTi where appropriate, ensuring advice is credible, structured, and data-driven.
+
+5. **Highlight business value**
+   Emphasize financial benefits, compliance advantages, procurement eligibility, customer attraction, and investor confidence.
+
+6. **Suggest quick wins**
+   Always provide at least one immediate, low-effort action that saves costs, supports compliance, or creates sales opportunities.
+
+7. **Budget awareness**
+   Prompt for available sustainability budgets at the right moments, and adjust recommendations accordingly.
+
+8. **Document-driven intelligence**
+
+   * Extract structured and numerical insights from uploaded documents.
+   * Use these insights to refine future recommendations.
+
+9. **Context storage**
+   Whenever possible, store and update all company information, sustainability data, and extracted values in Firebase for the authenticated user's Firestore document.
+
+#### **Tone & Style**
+
+* **Professional yet approachable** — like a supportive consultant.
+* **Proactive and practical** — always move the user toward measurable progress.
+* **Tailored for SMEs** — focus on clarity, simplicity, and achievable strategies.
+* **Spelling and grammer** — use UK English spelling.
+* **word count for response** — upto 200 words"""
+
+client.models.generate_content(
+    model=model,
+    contents=prompt
+)
+
 # Test for google tool
 # result1 = generalist.agent.invoke({"messages": [{"role": "user", "content": "Google search who won the nobel prize in physics in 2025?"}]})
 # print(f"Google Result: {result1}")
@@ -155,3 +230,26 @@ elif mode == "PLANNING":
 else:
     action.invoke(query)
 
+# API setup
+app = FastAPI(title="Chatbot", description="Dash agent", version="0.1")
+
+class ChatIn(BaseModel):
+    message: str = Field(description="User message")
+    #session_id: str
+
+class ChatOut(BaseModel):
+    response: str = Field(description="Agent response")
+
+# Default root endpoint as health check
+@app.get("/", status_code=200)
+async def root():
+    return {"message": "The chatbot seems to be up and running!"}
+
+@app.post("/chat", response_model=ChatOut)
+def chat(body: ChatIn):
+    try:
+        response = classifier.invoke(body.message)
+        return ChatOut(response=response)
+    
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"{type(e).__name__}: {e}")
