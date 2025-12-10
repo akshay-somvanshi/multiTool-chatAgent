@@ -1,7 +1,17 @@
 from langchain_google_vertexai import HarmBlockThreshold, HarmCategory
 from langchain_google_vertexai import ChatVertexAI
+import vertexai
 from langchain.agents import create_agent
 from langchain.agents.middleware import wrap_model_call, ModelRequest
+
+import os
+from dotenv import load_dotenv
+
+load_dotenv()
+
+project_id = os.getenv('GOOGLE_PROJECT_ID', 'dash-beta-e61d0')
+location = os.getenv('GOOGLE_LOCATION', 'europe-west1')
+vertexai.init(project=project_id, location=location)
 
 class agent:
     def __init__(self, model_name: str,  system_prompt: str, tool_set, search_input):

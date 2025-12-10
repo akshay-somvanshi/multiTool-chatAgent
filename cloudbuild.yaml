@@ -1,0 +1,24 @@
+steps:
+  # Step 1: Build docker image. GCR: Google Container Registry 
+  - name: "gcr.io/cloud-builders/docker"
+    # Tag the app
+    args: [ 'build', '-t', 'europe-west1-docker.pkg.dev/dash-beta-e61d0/ai-agent/ai-agent-app', '.' ]
+
+  # Step 2: Push the docker image to GCR
+  - name: "gcr.io/cloud-builders/docker"
+    args: ["push", 'europe-west1-docker.pkg.dev/dash-beta-e61d0/ai-agent/ai-agent-app']
+
+  # Step 3: Deploy image to Cloud run
+  - name: "gcr.io/cloud-builders/gcloud"
+    args:
+      [
+        "run", "deploy", "ai-agent-app",
+        "--image", "europe-west1-docker.pkg.dev/dash-beta-e61d0/ai-agent/ai-agent-app",
+        "--region", "europe-west1",
+        "--service-account=441601669115-compute@developer.gserviceaccount.com",
+        # For testing
+        "--allow-unauthenticated",
+        "--set-secrets", "GOOGLE_API_KEY=google-api-key:latest,GOOGLE_CSE_ID=google-cse-id:latest",
+        "--timeout", "300",
+        "--memory", "512Mi"
+      ]

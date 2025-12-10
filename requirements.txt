@@ -1,0 +1,10 @@
+fastapi
+langchain
+langchain-google-vertexai
+langchain-google-community
+google-cloud-core
+google-cloud-discoveryengine
+pydantic
+pydantic-core
+uvicorn
+python-dotenv
