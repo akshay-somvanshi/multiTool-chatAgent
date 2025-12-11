@@ -1,6 +1,6 @@
-from agent import agent
+# from agent import agent
 from classifier import classifier
-from tools import ToolList, search_input
+# from tools import ToolList, search_input
 from google import genai
 
 from pydantic import BaseModel, Field
@@ -137,13 +137,13 @@ system_instruction_act = (
 model = "gemini-2.5-flash"
 
 # Initialise all the LLMs
-tool = ToolList()
-generalist = agent(model, system_instruction_gen, tool.get_tools(), search_input)
-planning = agent(model, system_instruction_plan, tool.get_tools(), search_input)
-action = agent(model, system_instruction_act, tool.get_tools(), search_input)
+# tool = ToolList()
+# generalist = agent(model, system_instruction_gen, tool.get_tools(), search_input)
+# planning = agent(model, system_instruction_plan, tool.get_tools(), search_input)
+# action = agent(model, system_instruction_act, tool.get_tools(), search_input)
 
 # Initialise the classifier
-classifier = classifier()
+classifier = classifier(system_instruction_gen, system_instruction_plan, system_instruction_act)
 
 # Initialise the front end chatbot
 client = genai.Client(
@@ -222,13 +222,13 @@ client.models.generate_content(
 
 query = "I want to make my sustainability plan"
 mode = classifier.invoke(query)
-
-if mode == "GENERALIST":
-    print(generalist.invoke(query))
-elif mode == "PLANNING":
-    print(planning.invoke(query))
-else:
-    action.invoke(query)
+print(mode)
+# if mode == "GENERALIST":
+#     print(generalist.invoke(query))
+# elif mode == "PLANNING":
+#     print(planning.invoke(query))
+# else:
+#     action.invoke(query)
 
 # API setup
 app = FastAPI(title="Chatbot", description="Dash agent", version="0.1")
