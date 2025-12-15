@@ -20,7 +20,7 @@ class classifier():
         self.planning = agent(self.model, system_instruction_plan, self.tool.get_tools(), search_input)
         self.action = agent(self.model, system_instruction_act, self.tool.get_tools(), search_input)
 
-    def invoke(self,query):
+    def invoke(self,query,user_id=None):
         prompt = f"""
         You are a classifier that decides which operational mode to use.
 
@@ -42,8 +42,8 @@ class classifier():
         )
 
         if response.text == "GENERALIST":
-            return(self.generalist.invoke(query))
+            return(self.generalist.invoke(query, user_id))
         elif response.text == "PLANNING":
-            return(self.planning.invoke(query))
+            return(self.planning.invoke(query, user_id))
         else:
-            return(self.action.invoke(query))
+            return(self.action.invoke(query, user_id))

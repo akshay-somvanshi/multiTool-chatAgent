@@ -3,9 +3,10 @@ from langchain_google_vertexai import ChatVertexAI
 import vertexai
 from langchain.agents import create_agent
 from langchain.agents.middleware import wrap_model_call, ModelRequest
-from langchain_community.chat_message_histories.firestore import FirestoreChatMessageHistory
+from firestore import FireStoreChat
 
 import os
+from datetime import datetime
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -77,12 +78,11 @@ class agent:
         self.llm = self._create_llm()
         self.agent = self._create_agent(self.llm)
 
-    def _get_message_history(self, user_id: str, session_id: str):
+    def _get_message_history(self, user_id: str, session_id: str = None):
         """Create Firestore history for a specific user/session"""
-        return FirestoreChatMessageHistory(
-            collection_name='messages',
-            session_id=session_id,
-            user_id=user_id
+        return FireStoreChat(
+            user_id=user_id,
+            session_id=session_id
         )
     
     def _create_llm(self):
@@ -122,25 +122,47 @@ class agent:
         
         return str(content)
     
+    def _get_daily_session_id(self, user_id: str) -> str:
+        """Create one session per day"""
+        today = datetime.now().strftime('%Y%m%d')
+        return f"{today}"
+    
+    # def _get_session_summary(self, user_id: str):
+    #     """ Retrieve all sessions for this user and summarise each into a single output"""
+    #     data = {"messages": message_history}
+        
+    #     out = self.llm.invoke(f"You are a helpful assistant that summarises conversations briefly, incorporating all important information from the conversation. Summarise the following: {data}")
+    #     print(out)
+    #     return out
+    
     def invoke(self, query: str, user_id: str = None, session_id: str = None):
-        user_id = user_id or "CORZZX0MxTQtGyAD7PSCI1HLp3y2"
-        session_id = session_id or "user_id_randint"
+        session_id = self._get_daily_session_id(user_id)
+        # Temporary check
+        user_id = "CORZZX0MxTQtGyAD7PSCI1HLp3y2"
 
         message_history = self._get_message_history(user_id, session_id)
         message_history.add_user_message(query)
         
-        full_history = message_history.messages
-        formatted_history = [
+        full_history = message_history.load_messages(user_id)
+
+        # Limited short term memory 
+        recent_messages = [
             {"role": msg.type, "content": msg.content}
             for msg in full_history[-self.max_messages:]
         ]
 
-        result = self.agent.invoke({"messages": formatted_history})
+        # Long term summary 
+        # self._get_session_summary(user_id)
+
+        # To combine short and long term messages
+        context_messages = []
+
+        result = self.agent.invoke({"messages": recent_messages})
         
         # Extract text response
         response_content = self._extract_text_content(result["messages"][-1].content)
         
-        # Store as plain text in Firestore
+        # Store as plain text in Firesstore
         message_history.add_ai_message(response_content)
         
-        return response_content
+        return response_content, session_id

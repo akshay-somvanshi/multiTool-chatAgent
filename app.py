@@ -214,19 +214,20 @@ You are **Dash's AI Chief Sustainability Officer (AI-CSO)**, a virtual sustainab
 # print(f'Vertex AI search: {result2["messages"][-1].content}')
 
 # Test classifier
-query = "When can I do TCFD reporting?"
-response = classifier.invoke(query)
-print(response)
+query = "Whats CDP"
+response = classifier.invoke(query, "CORZZX0MxTQtGyAD7PSCI1HLp3y2")
+# print(response)
 
 # API setup
 app = FastAPI(title="Chatbot", description="Dash agent", version="0.1")
 
 class ChatIn(BaseModel):
     message: str = Field(description="User message")
-    #session_id: str
+    user_id: str = Field(description="Unique user identifier")
 
 class ChatOut(BaseModel):
     response: str = Field(description="Agent response")
+    session_id: str = Field(description="Current session id")
 
 # Default root endpoint as health check
 @app.get("/", status_code=200)
@@ -236,8 +237,8 @@ async def root():
 @app.post("/chat", response_model=ChatOut)
 def chat(body: ChatIn):
     try:
-        response = classifier.invoke(body.message)
-        return ChatOut(response=response)
+        response, session_id = classifier.invoke(body.message, body.user_id)
+        return ChatOut(response=response, session_id=session_id)
     
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"{type(e).__name__}: {e}")
