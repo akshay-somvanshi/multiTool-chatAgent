@@ -3,6 +3,7 @@ from langchain_google_vertexai import ChatVertexAI
 import vertexai
 from langchain.agents import create_agent
 from langchain.agents.middleware import wrap_model_call, ModelRequest
+from langchain_community.chat_message_histories.firestore import FirestoreChatMessageHistory
 
 import os
 from dotenv import load_dotenv
@@ -21,6 +22,9 @@ class agent:
         self.tool_list = tool_set
         self.system_prompt = system_prompt
         self.search_input = search_input
+
+        # Set a limit on how many last messages we inject (limit short term memory)
+        self.max_messages = 20
 
         # Safety - content filter configuration
         self.safety_settings = {
@@ -73,6 +77,14 @@ class agent:
         self.llm = self._create_llm()
         self.agent = self._create_agent(self.llm)
 
+    def _get_message_history(self, user_id: str, session_id: str):
+        """Create Firestore history for a specific user/session"""
+        return FirestoreChatMessageHistory(
+            collection_name='messages',
+            session_id=session_id,
+            user_id=user_id
+        )
+    
     def _create_llm(self):
         llm = ChatVertexAI(
             model_name=self.basic_model,
@@ -92,13 +104,43 @@ class agent:
             tools=self.tool_list,
             system_prompt=self.system_prompt,
             context_schema=self.search_input,
-            middleware=[self._model_selection]
+            middleware=[self._model_selection],
         )
         return agent
 
-    def invoke(self, query):
-        result = self.agent.invoke(
-            {"messages": [{"role": "user", "content": query}]}
-        )
+    def _extract_text_content(self, content):
+        """Extract plain text from structured content"""
+        if isinstance(content, str):
+            return content
+        
+        if isinstance(content, list):
+            text_parts = []
+            for block in content:
+                if isinstance(block, dict) and block.get('type') == 'text':
+                    text_parts.append(block.get('text', ''))
+            return '\n\n'.join(text_parts) if text_parts else str(content)
+        
+        return str(content)
+    
+    def invoke(self, query: str, user_id: str = None, session_id: str = None):
+        user_id = user_id or "CORZZX0MxTQtGyAD7PSCI1HLp3y2"
+        session_id = session_id or "user_id_randint"
 
-        return result["messages"][-1].content
+        message_history = self._get_message_history(user_id, session_id)
+        message_history.add_user_message(query)
+        
+        full_history = message_history.messages
+        formatted_history = [
+            {"role": msg.type, "content": msg.content}
+            for msg in full_history[-self.max_messages:]
+        ]
+
+        result = self.agent.invoke({"messages": formatted_history})
+        
+        # Extract text response
+        response_content = self._extract_text_content(result["messages"][-1].content)
+        
+        # Store as plain text in Firestore
+        message_history.add_ai_message(response_content)
+        
+        return response_content

@@ -10,7 +10,6 @@ import os
 import json
 from dotenv import load_dotenv
 
-
 location = 'europe-west1'
 
 load_dotenv()
@@ -136,12 +135,6 @@ system_instruction_act = (
 
 model = "gemini-2.5-flash"
 
-# Initialise all the LLMs
-# tool = ToolList()
-# generalist = agent(model, system_instruction_gen, tool.get_tools(), search_input)
-# planning = agent(model, system_instruction_plan, tool.get_tools(), search_input)
-# action = agent(model, system_instruction_act, tool.get_tools(), search_input)
-
 # Initialise the classifier
 classifier = classifier(system_instruction_gen, system_instruction_plan, system_instruction_act)
 
@@ -206,10 +199,10 @@ You are **Dash's AI Chief Sustainability Officer (AI-CSO)**, a virtual sustainab
 * **Spelling and grammer** — use UK English spelling.
 * **word count for response** — upto 200 words"""
 
-client.models.generate_content(
-    model=model,
-    contents=prompt
-)
+# client.models.generate_content(
+#     model=model,
+#     contents=prompt
+# )
 
 # Test for google tool
 # result1 = generalist.agent.invoke({"messages": [{"role": "user", "content": "Google search who won the nobel prize in physics in 2025?"}]})
@@ -220,15 +213,10 @@ client.models.generate_content(
 # result2 = generalist.agent.invoke({"messages": [{"role": "user", "content": "Provide the consumption from the electricity bill document"}]})
 # print(f'Vertex AI search: {result2["messages"][-1].content}')
 
-query = "I want to make my sustainability plan"
-mode = classifier.invoke(query)
-print(mode)
-# if mode == "GENERALIST":
-#     print(generalist.invoke(query))
-# elif mode == "PLANNING":
-#     print(planning.invoke(query))
-# else:
-#     action.invoke(query)
+# Test classifier
+query = "When can I do TCFD reporting?"
+response = classifier.invoke(query)
+print(response)
 
 # API setup
 app = FastAPI(title="Chatbot", description="Dash agent", version="0.1")

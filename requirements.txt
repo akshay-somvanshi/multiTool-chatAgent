@@ -4,6 +4,7 @@ langchain-google-vertexai
 langchain-google-community
 google-cloud-core
 google-cloud-discoveryengine
+firebase_admin
 pydantic
 pydantic-core
 uvicorn
