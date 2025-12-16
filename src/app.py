@@ -214,8 +214,8 @@ You are **Dash's AI Chief Sustainability Officer (AI-CSO)**, a virtual sustainab
 # print(f'Vertex AI search: {result2["messages"][-1].content}')
 
 # Test classifier
-query = "Whats CDP"
-response = classifier.invoke(query, "CORZZX0MxTQtGyAD7PSCI1HLp3y2")
+# query = "Whats CDP"
+# response = classifier.invoke(query, "CORZZX0MxTQtGyAD7PSCI1HLp3y2")
 # print(response)
 
 # API setup
