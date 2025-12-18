@@ -135,7 +135,7 @@ class agent:
     #     print(out)
     #     return out
     
-    def invoke(self, query: str, user_id: str = None, session_id: str = None):
+    def invoke_res(self, query: str, user_id: str = None, session_id: str = None):
         session_id = self._get_daily_session_id(user_id)
         # Temporary check
         user_id = "CORZZX0MxTQtGyAD7PSCI1HLp3y2"
@@ -156,7 +156,7 @@ class agent:
 
         # To combine short and long term messages
         context_messages = []
-
+        
         result = self.agent.invoke({"messages": recent_messages})
         
         # Extract text response

@@ -42,8 +42,8 @@ class classifier():
         )
 
         if response.text == "GENERALIST":
-            return(self.generalist.invoke(query, user_id))
+            return(self.generalist.invoke_res(query, user_id))
         elif response.text == "PLANNING":
-            return(self.planning.invoke(query, user_id))
+            return(self.planning.invoke_res(query, user_id))
         else:
-            return(self.action.invoke(query, user_id))
+            return(self.action.invoke_res(query, user_id))

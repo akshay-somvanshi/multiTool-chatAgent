@@ -31,7 +31,7 @@ system_instruction_gen = (
     - Provide simple explanations and context.
 
     Rules of operation:
-    - If a user asks about figures, historical consumption, invoices, emissions, or billing data → ALWAYS first use the `vertex_doc_search` tool.
+    - If a user asks about figures, historical consumption, invoices, emissions, or billing data or when you want to access any documents → ALWAYS first use the `vertex_doc_search` tool.
     - If a question involves current facts, news, recent reports, current regulatory updates, or anything time-sensitive → ALWAYS first call `google_search`.
     - NEVER fabricate facts, numbers, or statutory requirements.
 
@@ -111,7 +111,7 @@ system_instruction_act = (
         Example: audits must precede reduction initiatives.
 
     Tool usage:
-    - When referencing internal KPIs or prior performance → use `vertex_doc_search`.
+    - When referencing internal KPIs or prior performance or when you want to read any documents → use `vertex_doc_search`.
     - When referencing standards, emerging tech, evolving regulation → use `google_search`.
 
     Output expectations MUST include:
@@ -214,9 +214,9 @@ You are **Dash's AI Chief Sustainability Officer (AI-CSO)**, a virtual sustainab
 # print(f'Vertex AI search: {result2["messages"][-1].content}')
 
 # Test classifier
-# query = "Whats CDP"
-# response = classifier.invoke(query, "CORZZX0MxTQtGyAD7PSCI1HLp3y2")
-# print(response)
+query = "Can you extract the electricity information from my documents?"
+response = classifier.invoke(query, "CORZZX0MxTQtGyAD7PSCI1HLp3y2")
+print(response)
 
 # API setup
 app = FastAPI(title="Chatbot", description="Dash agent", version="0.1")

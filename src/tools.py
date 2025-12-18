@@ -18,6 +18,7 @@ class ToolList:
         self.search_wrapper = GoogleSearchAPIWrapper()
         self.project_id = os.getenv("GOOGLE_PROJECT_ID")
         self.location = os.getenv("GOOGLE_LOCATION")
+        self.location_vertexAI = "eu"
         self.engine_id = os.getenv("VERTEX_ENGINE_ID")
 
     def _logged_search(self, query):
@@ -63,8 +64,8 @@ class ToolList:
         #  For more information, refer to:
         # https://cloud.google.com/generative-ai-app-builder/docs/locations#specify_a_multi-region_for_your_data_store
         client_options = (
-            ClientOptions(api_endpoint=f"{self.location}-discoveryengine.googleapis.com")
-            if self.location != "global"
+            ClientOptions(api_endpoint=f"{self.location_vertexAI}-discoveryengine.googleapis.com")
+            if self.location_vertexAI != "global"
             else None
         )
 
@@ -72,7 +73,7 @@ class ToolList:
         client = discoveryengine.SearchServiceClient(client_options=client_options)
 
         # The full resource name of the search app serving config
-        serving_config = f"projects/{self.project_id}/locations/{self.location}/collections/default_collection/engines/{self.engine_id}/servingConfigs/default_config"
+        serving_config = f"projects/{self.project_id}/locations/{self.location_vertexAI}/collections/default_collection/engines/{self.engine_id}/servingConfigs/default_config"
 
         # Optional - only supported for unstructured data: Configuration options for search.
         # Refer to the `ContentSearchSpec` reference for all supported fields:
@@ -122,16 +123,21 @@ class ToolList:
         #     print(response)
         
         # Return the summary text for the LLM to use
-        return f"Result from internal documents: {page_result._response}"
-        # if page_result.summary and page_result.summary.summary_text:
-        #     final_response = f"Summary from internal documents:\n{page_result.summary.summary_text}"
-        #     # Add citations
-        # else:
-        #      # Fallback if Vertex AI couldn't generate a summary but found documents
-        #     final_response = "No summary generated, but documents were found. Please refine search."
+        # return f"Result from internal documents: {page_result._response}"
+        summary = page_result.summary.summary_text if page_result.summary else ""
 
-        # print(page_result.summary)
-        # return final_response
+        # snippets = []
+        # for r in page_result:
+        #     if r.document.derived_struct_data.get("snippets"):
+        #         snippets.append(r.document.derived_struct_data["snippets"][0]["snippet"])
+
+        return f"""
+        SUMMARY:
+        {summary}"""
+
+        # SNIPPETS:\n
+        # {snippets}
+        # """
 
     def get_tools(self) -> list[Tool]:
         google_search_tool = Tool(

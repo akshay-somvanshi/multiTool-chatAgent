@@ -21,5 +21,5 @@ steps:
         "--set-secrets", "GOOGLE_API_KEY=google-api-key:latest,GOOGLE_CSE_ID=google-cse-id:latest",
         "--timeout", "300",
         "--memory", "1Gi",
-        "--cpu", "2",     
+        "--cpu", "2",
       ]
