@@ -31,7 +31,8 @@ system_instruction_gen = (
     - Provide simple explanations and context.
 
     Rules of operation:
-    - If a user asks about figures, historical consumption, invoices, emissions, or billing data or when you want to access any documents → ALWAYS first use the `vertex_doc_search` tool.
+    - If a user asks about figures, historical consumption, invoices, emissions, or billing data → ALWAYS first use the `vertex_doc_search` tool.
+    - If the user wants you to access any documents -> ALWAYS first use the `document_read` tool.
     - If a question involves current facts, news, recent reports, current regulatory updates, or anything time-sensitive → ALWAYS first call `google_search`.
     - NEVER fabricate facts, numbers, or statutory requirements.
 
@@ -112,6 +113,7 @@ system_instruction_act = (
 
     Tool usage:
     - When referencing internal KPIs or prior performance or when you want to read any documents → use `vertex_doc_search`.
+    - If the user wants you to access any documents -> ALWAYS first use the `document_read` tool.
     - When referencing standards, emerging tech, evolving regulation → use `google_search`.
 
     Output expectations MUST include:
@@ -214,7 +216,7 @@ You are **Dash's AI Chief Sustainability Officer (AI-CSO)**, a virtual sustainab
 # print(f'Vertex AI search: {result2["messages"][-1].content}')
 
 # Test classifier
-query = "Can you extract the electricity information from my documents?"
+query = "Can you extract the electricity information from this: https://storage.googleapis.com/dash-beta-e61d0.firebasestorage.app/users/CORZZX0MxTQtGyAD7PSCI1HLp3y2/uploads/Energia%20-%20luglio%202024_ft%2020824956.pdf"
 response = classifier.invoke(query, "CORZZX0MxTQtGyAD7PSCI1HLp3y2")
 print(response)
 

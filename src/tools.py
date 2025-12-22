@@ -3,8 +3,10 @@ from langchain_google_community import GoogleSearchAPIWrapper
 from pydantic import BaseModel, Field
 from google.api_core.client_options import ClientOptions
 from google.cloud import discoveryengine_v1 as discoveryengine
+from google.cloud import documentai_v1
 import os
 import dotenv
+import requests
 
 dotenv.load_dotenv()
 
@@ -20,15 +22,92 @@ class ToolList:
         self.location = os.getenv("GOOGLE_LOCATION")
         self.location_vertexAI = "eu"
         self.engine_id = os.getenv("VERTEX_ENGINE_ID")
+        self.document_ai_id = os.getenv("DOCUMENT_AI_ID")
 
-    def _logged_search(self, query):
+    def _logged_search(
+        self,
+        query
+    ):
         print(f"Google called with query: {query}")
         result = self.search_wrapper.run(query)
         print(f"Search result: {result[:200]}...")
         return result
     
+    def _document_read(
+        self,
+        document_url
+    ):
+        """
+        Extracts full textual content from a PDF document using Google Document AI.
+
+        This method uses a pre-configured Document AI processor to read and
+        OCR a PDF file (such as invoices, utility bills, or reports) and returns
+        the extracted raw text. It is designed for structured and unstructured
+        sustainability-related documents where precise text extraction is required
+        prior to downstream analysis (e.g. energy consumption parsing).
+
+        The function assumes:
+        - The document is accessible locally (downloaded beforehand).
+        - The document is a PDF (`application/pdf`).
+        - A valid Document AI processor exists in the specified project and region.
+
+        Parameters
+        ----------
+        document_url : str
+            URL or file path to the PDF document
+
+        Returns
+        -------
+        str
+            The full extracted text content of the document as a single string,
+            preserving reading order as returned by Document AI.
+
+        Raises
+        ------
+        google.api_core.exceptions.GoogleAPICallError
+            If the Document AI API request fails.
+        google.api_core.exceptions.NotFound
+            If the specified processor does not exist or is inaccessible.
+        IOError
+            If the document file cannot be read from the provided path.
+        """
+        # Set api endpoint to eu
+        opts = ClientOptions(api_endpoint=f"{self.location_vertexAI}-documentai.googleapis.com")
+
+        # Initialise client
+        client = documentai_v1.DocumentProcessorServiceClient(client_options=opts)
+
+        # Processor reference
+        full_processor_name = client.processor_path(self.project_id, self.location_vertexAI, self.document_ai_id)
+        request = documentai_v1.GetProcessorRequest(name=full_processor_name)
+        processor = client.get_processor(request=request)
+
+        if document_url.startswith("http://") or document_url.startswith("https://"):
+            response = requests.get(document_url, timeout=30)
+            response.raise_for_status()
+            image_content = response.content
+        else:
+            # Read from local file
+            if not os.path.exists(document_url):
+                raise FileNotFoundError(f"File not found: {document_url}")
+            
+            with open(document_url, "rb") as image:
+                image_content = image.read()
+
+        raw_doc = documentai_v1.RawDocument(
+            content=image_content,
+            mime_type="application/pdf"
+        )
+
+        # Send request to process document
+        request = documentai_v1.ProcessRequest(name=processor.name, raw_document=raw_doc)
+        result = client.process_document(request=request)
+        document = result.document
+
+        return document.text
+    
     # @tool(args_schema=search_input)
-    def _search_sample(
+    def _search_db(
         self,
         search_query: str = ""
     ) -> str:
@@ -146,6 +225,6 @@ class ToolList:
             func=self.search_wrapper.run,
         )
 
-        tools_list = [google_search_tool, self._search_sample]
+        tools_list = [google_search_tool, self._search_db, self._document_read]
 
         return tools_list
