@@ -49,7 +49,6 @@ class ToolList:
         The function assumes:
         - The document is accessible locally (downloaded beforehand).
         - The document is a PDF (`application/pdf`).
-        - A valid Document AI processor exists in the specified project and region.
 
         Parameters
         ----------

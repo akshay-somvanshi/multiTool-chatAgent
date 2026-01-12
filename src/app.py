@@ -5,6 +5,7 @@ from google import genai
 
 from pydantic import BaseModel, Field
 from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 
 import os
 import json
@@ -222,6 +223,14 @@ print(response)
 
 # API setup
 app = FastAPI(title="Chatbot", description="Dash agent", version="0.1")
+
+# Add CORS
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 class ChatIn(BaseModel):
     message: str = Field(description="User message")
