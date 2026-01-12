@@ -73,6 +73,7 @@ class ToolList:
         # Set api endpoint to eu
         opts = ClientOptions(api_endpoint=f"{self.location_vertexAI}-documentai.googleapis.com")
 
+        # OPTIMSE OVERHEAD
         # Initialise client
         client = documentai_v1.DocumentProcessorServiceClient(client_options=opts)
 

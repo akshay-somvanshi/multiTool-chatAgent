@@ -217,9 +217,9 @@ You are **Dash's AI Chief Sustainability Officer (AI-CSO)**, a virtual sustainab
 # print(f'Vertex AI search: {result2["messages"][-1].content}')
 
 # Test classifier
-query = "Can you extract the electricity information from this: https://storage.googleapis.com/dash-beta-e61d0.firebasestorage.app/users/CORZZX0MxTQtGyAD7PSCI1HLp3y2/uploads/Energia%20-%20luglio%202024_ft%2020824956.pdf"
-response = classifier.invoke(query, "CORZZX0MxTQtGyAD7PSCI1HLp3y2")
-print(response)
+# query = "Can you extract the electricity information from this: https://storage.googleapis.com/dash-beta-e61d0.firebasestorage.app/users/CORZZX0MxTQtGyAD7PSCI1HLp3y2/uploads/Energia%20-%20luglio%202024_ft%2020824956.pdf"
+# response = classifier.invoke(query, "CORZZX0MxTQtGyAD7PSCI1HLp3y2")
+# print(response)
 
 # API setup
 app = FastAPI(title="Chatbot", description="Dash agent", version="0.1")
