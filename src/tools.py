@@ -24,6 +24,17 @@ class ToolList:
         self.engine_id = os.getenv("VERTEX_ENGINE_ID")
         self.document_ai_id = os.getenv("DOCUMENT_AI_ID")
 
+        # Initialise document AI client
+        # Set api endpoint to eu
+        opts = ClientOptions(api_endpoint=f"{self.location_vertexAI}-documentai.googleapis.com")
+        self.docai_client = documentai_v1.DocumentProcessorServiceClient(client_options=opts)
+        # Processor reference
+        self.processor_name = self.docai_client.processor_path(
+            self.project_id, 
+            self.location_vertexAI,
+            self.document_ai_id
+        )
+
     def _logged_search(
         self,
         query
@@ -70,17 +81,6 @@ class ToolList:
         IOError
             If the document file cannot be read from the provided path.
         """
-        # Set api endpoint to eu
-        opts = ClientOptions(api_endpoint=f"{self.location_vertexAI}-documentai.googleapis.com")
-
-        # OPTIMSE OVERHEAD
-        # Initialise client
-        client = documentai_v1.DocumentProcessorServiceClient(client_options=opts)
-
-        # Processor reference
-        full_processor_name = client.processor_path(self.project_id, self.location_vertexAI, self.document_ai_id)
-        request = documentai_v1.GetProcessorRequest(name=full_processor_name)
-        processor = client.get_processor(request=request)
 
         if document_url.startswith("http://") or document_url.startswith("https://"):
             response = requests.get(document_url, timeout=30)
@@ -100,8 +100,8 @@ class ToolList:
         )
 
         # Send request to process document
-        request = documentai_v1.ProcessRequest(name=processor.name, raw_document=raw_doc)
-        result = client.process_document(request=request)
+        request = documentai_v1.ProcessRequest(name=self.processor_name, raw_document=raw_doc)
+        result = self.docai_client.process_document(request=request)
         document = result.document
 
         return document.text
