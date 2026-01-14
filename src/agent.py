@@ -78,8 +78,11 @@ class agent:
         self.llm = self._create_llm()
         self.agent = self._create_agent(self.llm)
 
-    def _get_message_history(self, user_id: str, session_id: str = None):
-        """Create Firestore history for a specific user/session"""
+        # Boolean to check whether the agent has the user context
+        self.sent_context = False
+
+    def _init_FireStore(self, user_id: str, session_id: str = None):
+        """Initialise Firestore to obtain chat history or user info for a specific user/session"""
         return FireStoreChat(
             user_id=user_id,
             session_id=session_id
@@ -127,6 +130,14 @@ class agent:
         today = datetime.now().strftime('%Y%m%d')
         return f"{today}"
     
+    def _get_or_inject_context(self, firestore: FireStoreChat):
+        """ Inject user context once per session """
+        if not self.sent_context:
+            context = firestore.get_user_context()
+            self.sent_context = True
+            return context
+        return None
+    
     # def _get_session_summary(self, user_id: str):
     #     """ Retrieve all sessions for this user and summarise each into a single output"""
     #     data = {"messages": message_history}
@@ -140,16 +151,25 @@ class agent:
         # Temporary check
         user_id = "CORZZX0MxTQtGyAD7PSCI1HLp3y2"
 
-        message_history = self._get_message_history(user_id, session_id)
-        message_history.add_user_message(query)
+        firestore = self._init_FireStore(user_id, session_id)
+
+        # Inject context only once per session
+        context = self._get_or_inject_context(firestore)
         
-        full_history = message_history.load_messages(user_id)
+        firestore.add_user_message(query)
+        
+        # History containing only messages from current session
+        full_history = firestore.load_messages()
 
         # Limited short term memory 
         recent_messages = [
             {"role": msg.type, "content": msg.content}
             for msg in full_history[-self.max_messages:]
         ]
+
+        # Add context to beginning if first time
+        if context:
+            recent_messages = [{"role": "system", "content": context}] + recent_messages
 
         # Long term summary 
         # self._get_session_summary(user_id)
@@ -163,6 +183,6 @@ class agent:
         response_content = self._extract_text_content(result["messages"][-1].content)
         
         # Store as plain text in Firesstore
-        message_history.add_ai_message(response_content)
+        firestore.add_ai_message(response_content)
         
         return response_content, session_id

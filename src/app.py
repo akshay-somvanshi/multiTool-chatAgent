@@ -221,6 +221,10 @@ You are **Dash's AI Chief Sustainability Officer (AI-CSO)**, a virtual sustainab
 # response = classifier.invoke(query, "CORZZX0MxTQtGyAD7PSCI1HLp3y2")
 # print(response)
 
+# query = "How is my company doing on the stock market today?"
+# response = classifier.invoke(query, "CORZZX0MxTQtGyAD7PSCI1HLp3y2")
+# print(response)
+
 # API setup
 app = FastAPI(title="Chatbot", description="Dash agent", version="0.1")
 
