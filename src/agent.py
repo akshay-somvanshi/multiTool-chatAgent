@@ -182,7 +182,8 @@ class agent:
         # Extract text response
         response_content = self._extract_text_content(result["messages"][-1].content)
         
-        # Store as plain text in Firesstore
-        firestore.add_ai_message(response_content)
+        # Store as plain text in Firestore if response is non empty to avoid InvalidArg error
+        if response_content and response_content.strip():
+            firestore.add_ai_message(response_content)
         
         return response_content, session_id

@@ -37,10 +37,16 @@ class FireStoreChat():
         data = []
         for message in list_messages:
             msg = message.to_dict()
+            content = msg.get("content", "")
+
+            # Skip empty content
+            if not content or not content.strip():
+                continue
+
             if msg["role"] == "user":
-                data.append(HumanMessage(content=msg["content"]))
+                data.append(HumanMessage(content=content))
             else:
-                data.append(AIMessage(content=msg["content"]))
+                data.append(AIMessage(content=content))
 
         return data
 
