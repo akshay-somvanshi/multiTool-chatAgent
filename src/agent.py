@@ -15,6 +15,9 @@ project_id = os.getenv('GOOGLE_PROJECT_ID', 'dash-beta-e61d0')
 location = os.getenv('GOOGLE_LOCATION', 'europe-west1')
 vertexai.init(project=project_id, location=location)
 
+class EmptyLLMResponseError(Exception):
+    pass
+
 class agent:
     def __init__(self, model_name: str,  system_prompt: str, tool_set, search_input):
         self.basic_model = model_name
@@ -136,6 +139,7 @@ class agent:
     #     return out
     
     def invoke_res(self, query: str, user_id: str = None, session_id: str = None):
+        max_retries = 2
         session_id = self._get_daily_session_id(user_id)
         # Temporary check
         # user_id = "CORZZX0MxTQtGyAD7PSCI1HLp3y2"
@@ -165,10 +169,20 @@ class agent:
         # To combine short and long term messages
         context_messages = []
         
-        result = self.agent.invoke({"messages": recent_messages})
-        
         # Extract text response
-        response_content = self._extract_text_content(result["messages"][-1].content)
+        for attempt in range(max_retries):
+            try:
+                result = self.agent.invoke({"messages": recent_messages})
+                response_content = self._extract_text_content(result["messages"][-1].content)
+                
+                if response_content and response_content.strip():
+                    break
+
+                raise EmptyLLMResponseError()
+            
+            except EmptyLLMResponseError as e:
+                if attempt == max_retries-1:
+                    response_content = "I could not generate a response. Please try again"
         
         # Store as plain text in Firestore if response is non empty to avoid InvalidArg error
         if response_content and response_content.strip():
