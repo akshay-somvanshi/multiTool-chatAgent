@@ -78,9 +78,6 @@ class agent:
         self.llm = self._create_llm()
         self.agent = self._create_agent(self.llm)
 
-        # Boolean to check whether the agent has the user context
-        self.sent_context = False
-
     def _init_FireStore(self, user_id: str, session_id: str = None):
         """Initialise Firestore to obtain chat history or user info for a specific user/session"""
         return FireStoreChat(
@@ -130,14 +127,6 @@ class agent:
         today = datetime.now().strftime('%Y%m%d')
         return f"{today}"
     
-    def _get_or_inject_context(self, firestore: FireStoreChat):
-        """ Inject user context once per session """
-        if not self.sent_context:
-            context = firestore.get_user_context()
-            self.sent_context = True
-            return context
-        return None
-    
     # def _get_session_summary(self, user_id: str):
     #     """ Retrieve all sessions for this user and summarise each into a single output"""
     #     data = {"messages": message_history}
@@ -149,12 +138,9 @@ class agent:
     def invoke_res(self, query: str, user_id: str = None, session_id: str = None):
         session_id = self._get_daily_session_id(user_id)
         # Temporary check
-        user_id = "CORZZX0MxTQtGyAD7PSCI1HLp3y2"
+        # user_id = "CORZZX0MxTQtGyAD7PSCI1HLp3y2"
 
         firestore = self._init_FireStore(user_id, session_id)
-
-        # Inject context only once per session
-        context = self._get_or_inject_context(firestore)
         
         firestore.add_user_message(query)
         
@@ -167,9 +153,11 @@ class agent:
             for msg in full_history[-self.max_messages:]
         ]
 
-        # Add context to beginning if first time
-        if context:
-            recent_messages = [{"role": "system", "content": context}] + recent_messages
+        # Inject user context in a stateless way
+        recent_messages = [
+            {"role": "system", "content": firestore.get_user_context()},
+            *recent_messages
+        ]
 
         # Long term summary 
         # self._get_session_summary(user_id)
