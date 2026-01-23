@@ -1,5 +1,5 @@
 from google import genai
-from tools import ToolList, search_input
+from tools import ToolList, google_search_input, vertex_search_input, document_read_input
 from agent import agent
 
 project_id = 'dash-beta-e61d0'
@@ -16,9 +16,9 @@ class classifier():
         self.model = 'gemini-2.5-flash'
 
         self.tool = ToolList()
-        self.generalist = agent(self.model, system_instruction_gen, self.tool.get_tools(), search_input)
-        self.planning = agent(self.model, system_instruction_plan, self.tool.get_tools(), search_input)
-        self.action = agent(self.model, system_instruction_act, self.tool.get_tools(), search_input)
+        self.generalist = agent(self.model, system_instruction_gen, self.tool.get_tools(), google_search_input)
+        self.planning = agent(self.model, system_instruction_plan, self.tool.get_tools(), vertex_search_input)
+        self.action = agent(self.model, system_instruction_act, self.tool.get_tools(), document_read_input)
 
     def invoke(self,query,user_id=None):
         prompt = f"""
