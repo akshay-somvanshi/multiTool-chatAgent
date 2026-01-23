@@ -28,6 +28,11 @@ class document_read_input(BaseModel):
         description='The url of the document that must be read'
     )
 
+class search_query(BaseModel):
+    search_query: str = Field(
+        description='The natural language query to process'
+    )
+
 class ToolList:
     def __init__(self):
         self.search_wrapper = GoogleSearchAPIWrapper()
@@ -96,6 +101,7 @@ class ToolList:
         """
 
         if document_url.startswith("http://") or document_url.startswith("https://"):
+            print(f"Reading {document_url}")
             response = requests.get(document_url, timeout=30)
             response.raise_for_status()
             image_content = response.content
@@ -517,7 +523,16 @@ class ToolList:
         
         document_read_tool = Tool(
             name="document_read",
-            description="Extract text from a PDF using Document AI.",
+            description=(
+                "Extract text from a PDF using Document AI.\n"
+                "You MUST call this tool using JSON only.\n"
+                "Input schema:\n"
+                "{ \"document_url\": \"string\" }\n"
+                "DO NOT write code.\n"
+                "DO NOT use print().\n"
+                "DO NOT reference default_api.\n"
+                "Return only a JSON tool call."
+            ),
             args_schema=document_read_input,
             func=self._document_read, 
         )

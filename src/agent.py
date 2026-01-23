@@ -173,6 +173,9 @@ class agent:
         for attempt in range(max_retries):
             try:
                 result = self.agent.invoke({"messages": recent_messages})
+                if result.get("finish_reason") == "MALFORMED_FUNCTION_CALL":
+                    raise RuntimeError("Tool call failed due to malformed arguments")
+                
                 response_content = self._extract_text_content(result["messages"][-1].content)
                 
                 if response_content and response_content.strip():
