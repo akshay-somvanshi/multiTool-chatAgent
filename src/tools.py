@@ -7,6 +7,9 @@ from google.cloud import documentai_v1
 import os
 import dotenv
 import requests
+import google
+from urllib.parse import urlparse, parse_qs
+from google.cloud import storage
 
 dotenv.load_dotenv()
 
@@ -61,6 +64,65 @@ class ToolList:
         result = self.search_wrapper.run(query)
         print(f"Search result: {result[:200]}...")
         return result
+
+    def _download_from_gcs(self, url):
+        """Download file from GCS using storage client (handles signed URLs better)."""
+        try:
+            # Parse the URL to extract bucket and blob path
+            # URL format: https://storage.googleapis.com/bucket-name/path/to/file
+            # or: https://bucket-name.storage.googleapis.com/path/to/file
+            
+            parsed = urlparse(url)
+            
+            # Extract bucket and path
+            if 'storage.googleapis.com' in parsed.netloc:
+                # Format: storage.googleapis.com/bucket/path or bucket.storage.googleapis.com/path
+                path_parts = parsed.path.lstrip('/').split('/', 1)
+                if len(path_parts) == 2:
+                    bucket_name, blob_path = path_parts
+                else:
+                    # Bucket in subdomain
+                    bucket_name = parsed.netloc.split('.')[0]
+                    blob_path = parsed.path.lstrip('/')
+            elif 'firebasestorage.app' in parsed.netloc:
+                # Firebase Storage format: bucket.firebasestorage.app/path
+                bucket_name = parsed.netloc.split('.')[0]
+                blob_path = parsed.path.lstrip('/')
+            else:
+                raise ValueError(f"Unsupported GCS URL format: {url}")
+
+            print(f"Downloading from GCS bucket: {bucket_name}, path: {blob_path}", flush=True)
+            
+            # Use storage client
+            storage_client = storage.Client(project=self.project_id)
+            bucket = storage_client.bucket(bucket_name)
+            blob = bucket.blob(blob_path)
+            
+            # Download as bytes
+            content = blob.download_as_bytes()
+            print(f"Downloaded {len(content)} bytes from GCS", flush=True)
+            
+            return content
+            
+        except Exception as e:
+            print(f"GCS download failed: {e}, falling back to HTTP", flush=True)
+            # Fallback to HTTP download
+            return self._download_from_http(url)
+
+    def _download_from_http(self, url):
+        """Download file via HTTP."""
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (compatible; DocumentAI/1.0)'
+        }
+        
+        response = requests.get(
+            url, 
+            timeout=60,
+            headers=headers,
+            stream=True
+        )
+        response.raise_for_status()
+        return response.content
     
     def _document_read(
         self,
@@ -100,30 +162,74 @@ class ToolList:
             If the document file cannot be read from the provided path.
         """
 
-        if document_url.startswith("http://") or document_url.startswith("https://"):
-            print(f"Reading {document_url}")
-            response = requests.get(document_url, timeout=30)
-            response.raise_for_status()
-            image_content = response.content
-        else:
-            # Read from local file
-            if not os.path.exists(document_url):
-                raise FileNotFoundError(f"File not found: {document_url}")
+        try:
+            if 'storage.googleapis.com' in document_url or 'firebasestorage.app' in document_url:
+                print(f"Detected GCS URL, using storage client", flush=True)
+                image_content = self._download_from_gcs(document_url)
+            elif document_url.startswith("http://") or document_url.startswith("https://"):
+                print(f"Downloading PDF from HTTP URL", flush=True)
+                image_content = self._download_from_http(document_url)
+            else:
+                if not os.path.exists(document_url):
+                    raise FileNotFoundError(f"File not found: {document_url}")
+                
+                with open(document_url, "rb") as image:
+                    image_content = image.read()
+                print(f"PDF loaded, size: {len(image_content) / 1_000_000:.2f} MB", flush=True)
+
+            raw_doc = documentai_v1.RawDocument(
+                content=image_content,
+                mime_type="application/pdf"
+            )
+
+            # Verify processor name
+            print(f"Using processor: {self.processor_name}", flush=True)
+
+            # Create request
+            request = documentai_v1.ProcessRequest(
+                name=self.processor_name, 
+                raw_document=raw_doc
+            )
+            print("ProcessRequest created, calling Document AI...", flush=True)
             
-            with open(document_url, "rb") as image:
-                image_content = image.read()
-
-        raw_doc = documentai_v1.RawDocument(
-            content=image_content,
-            mime_type="application/pdf"
-        )
-
-        # Send request to process document
-        request = documentai_v1.ProcessRequest(name=self.processor_name, raw_document=raw_doc)
-        result = self.docai_client.process_document(request=request)
-        document = result.document
-
-        return document.text
+            # Call Document AI with explicit error handling
+            try:
+                result = self.docai_client.process_document(
+                    request=request,
+                    timeout=600.0
+                )
+                print("Document AI call completed successfully", flush=True)
+                
+            except google.api_core.exceptions.GoogleAPICallError as e:
+                print(f"Document AI API error: {e}", flush=True)
+                print(f"Error details: {e.details()}", flush=True)
+                raise
+            except google.api_core.exceptions.NotFound as e:
+                print(f"Processor not found: {e}", flush=True)
+                raise
+            except google.api_core.exceptions.PermissionDenied as e:
+                print(f"Permission denied: {e}", flush=True)
+                raise
+            except google.api_core.exceptions.DeadlineExceeded as e:
+                print(f"Request deadline exceeded: {e}", flush=True)
+                raise
+            except Exception as e:
+                print(f"Unexpected error during Document AI call: {type(e).__name__}", flush=True)
+                print(f"Error message: {str(e)}", flush=True)
+                import traceback
+                print(f"Traceback: {traceback.format_exc()}", flush=True)
+                raise
+            
+            document = result.document
+            print(f"Text extraction complete, length: {len(document.text)} characters", flush=True)
+            
+            return document.text
+        
+        except Exception as e:
+            print(f"Fatal error in _document_read: {type(e).__name__}: {str(e)}", flush=True)
+            import traceback
+            print(f"Full traceback: {traceback.format_exc()}", flush=True)
+            raise
     
     # @tool(args_schema=search_input)
     def _search_db(
@@ -518,7 +624,7 @@ class ToolList:
             Input: A natural language search query (e.g., 'electricity bill March 2024' or 'energy consumption last year')
             Output: Summary of relevant information from the user's documents.""", 
             args_schema=vertex_search_input,
-            func=self._search_db2, 
+            func=lambda search_query, user_id=None: self._search_db2(search_query, user_id), 
         )
         
         document_read_tool = Tool(
@@ -534,7 +640,7 @@ class ToolList:
                 "Return only a JSON tool call."
             ),
             args_schema=document_read_input,
-            func=self._document_read, 
+            func=lambda document_url: self._document_read(document_url), 
         )
 
         tools_list = [google_search_tool, vertex_doc_search_tool, document_read_tool]

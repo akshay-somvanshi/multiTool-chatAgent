@@ -107,6 +107,13 @@ system_instruction_gen = (
     * **Definition:** The user is pointing to a specific file or document they have provided or referenced by name.
     * **Triggers:** "Summarize this PDF," "Analyze the attached file," "Read the contract named [filename]."
 
+    When using tools:
+    - NEVER write code
+    - NEVER use print()
+    - NEVER reference default_api
+    - ALWAYS call tools using JSON arguments only
+    - If unsure, ask the user instead of guessing
+
     ---
 
     ### 2. HANDLING HYBRID QUERIES

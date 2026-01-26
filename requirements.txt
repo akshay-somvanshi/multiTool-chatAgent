@@ -10,3 +10,4 @@ pydantic
 pydantic-core
 uvicorn
 python-dotenv
+psutil

@@ -19,7 +19,7 @@ steps:
         # For testing
         "--allow-unauthenticated",
         "--set-secrets", "GOOGLE_API_KEY=google-api-key:latest,GOOGLE_CSE_ID=google-cse-id:latest",
-        "--timeout", "300",
-        "--memory", "1Gi",
-        "--cpu", "2",
+        "--timeout", "600",
+        "--memory", "4Gi",
+        "--cpu", "4",
       ]
