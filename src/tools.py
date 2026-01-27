@@ -11,6 +11,8 @@ import google
 from urllib.parse import urlparse, parse_qs
 from google.cloud import storage
 
+from .api_client import view_action
+
 dotenv.load_dotenv()
 
 class google_search_input(BaseModel):
@@ -34,6 +36,11 @@ class document_read_input(BaseModel):
 class search_query(BaseModel):
     search_query: str = Field(
         description='The natural language query to process'
+    )
+
+class get_api(BaseModel):
+    user_id: str = Field(
+        description="User id whos actions are fetched from the database"
     )
 
 class ToolList:
@@ -231,6 +238,13 @@ class ToolList:
             print(f"Full traceback: {traceback.format_exc()}", flush=True)
             raise
     
+    def read_actions(
+            self,
+            user_id: str
+    ) -> dict:
+        """ Fetches all sustainability actions for the user """
+        return view_action(user_id)
+
     # @tool(args_schema=search_input)
     def _search_db(
         self,
@@ -609,6 +623,13 @@ class ToolList:
             func=self.search_wrapper.run,
         )
 
+        read_actions_tool = Tool(
+            name = "read_actions",
+            description="Reads the existing sustainability actions from the database",
+            args_schema = get_api,
+            func=self.read_actions
+        )
+
         vertex_doc_search_tool = Tool(
             name="vertex_doc_search", 
             description="""Search user's internal sustainability documents (electricity bills, invoices, 
@@ -643,6 +664,6 @@ class ToolList:
             func=lambda document_url: self._document_read(document_url), 
         )
 
-        tools_list = [google_search_tool, vertex_doc_search_tool, document_read_tool]
+        tools_list = [google_search_tool, vertex_doc_search_tool, document_read_tool, read_actions_tool]
 
         return tools_list

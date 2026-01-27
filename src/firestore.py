@@ -18,6 +18,8 @@ class FireStoreChat():
                          .document(user_id)
         )
 
+        self.user_id = user_id
+
     def add_user_message(self, content):
         self.ref.add({
             "role": "user",
@@ -73,7 +75,8 @@ class FireStoreChat():
             f"their company name is {user_data.get('company_name', '')}, " 
             f"and it is in the {user_data.get('company_industry', '')} industry. " 
             f"They work in the {user_data.get('team', '')} team/department, " 
-            f"{uk_oper}, and {strat}." 
+            f"{uk_oper}, and {strat}."
+            f"Their user_id is {self.user_id}" 
         ) 
         
         return context

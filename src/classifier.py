@@ -1,6 +1,6 @@
 from google import genai
-from tools import ToolList, search_query
-from agent import agent
+from .tools import ToolList, search_query
+from .agent import agent
 
 project_id = 'dash-beta-e61d0'
 location = 'europe-west1'

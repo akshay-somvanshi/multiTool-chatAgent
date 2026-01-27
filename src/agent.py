@@ -3,7 +3,7 @@ from langchain_google_vertexai import ChatVertexAI
 import vertexai
 from langchain.agents import create_agent
 from langchain.agents.middleware import wrap_model_call, ModelRequest
-from firestore import FireStoreChat
+from .firestore import FireStoreChat
 
 import os
 from datetime import datetime
@@ -173,6 +173,7 @@ class agent:
         for attempt in range(max_retries):
             try:
                 result = self.agent.invoke({"messages": recent_messages})
+                print(result)
                 if result.get("finish_reason") == "MALFORMED_FUNCTION_CALL":
                     raise RuntimeError("Tool call failed due to malformed arguments")
                 
