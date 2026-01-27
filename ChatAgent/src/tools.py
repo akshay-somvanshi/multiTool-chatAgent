@@ -11,7 +11,8 @@ import google
 from urllib.parse import urlparse, parse_qs
 from google.cloud import storage
 
-from .api_client import view_action
+from .api_client import view_actionList
+from ..core.exceptions import APIError
 
 dotenv.load_dotenv()
 
@@ -243,8 +244,14 @@ class ToolList:
             user_id: str
     ) -> dict:
         """ Fetches all sustainability actions for the user """
-        return view_action(user_id)
-
+        try:
+            return view_actionList(user_id)
+        except APIError as e:
+            return {
+                "error": {e},
+                "actions": []
+            }
+        
     # @tool(args_schema=search_input)
     def _search_db(
         self,
