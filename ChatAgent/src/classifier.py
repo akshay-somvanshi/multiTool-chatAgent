@@ -13,7 +13,7 @@ class classifier():
             location=location
         )
         
-        self.model = 'gemini-2.5-flash'
+        self.model = 'gemini-2.5-pro'
 
         self.tool = ToolList()
         self.generalist = agent(self.model, system_instruction_gen, self.tool.get_tools(), search_query)

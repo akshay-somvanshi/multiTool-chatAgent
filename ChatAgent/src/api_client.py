@@ -25,8 +25,6 @@ class Action(BaseModel):
     timeline_start: datetime
     timeline_end: datetime
     status: str
-    # created_at: str
-    # user_id: str
 
 class ActionList(BaseModel):
     actions: List[Action]
@@ -75,11 +73,11 @@ class BaseAPIClient:
     # ):
     #     return Action()
 
-    def add_action(
+    def add_action_service(
+        self,
         user_id: str,
         payload: Action
     ):
-        pass
+        return self._make_request(method="POST", endpoint="action", user_id=user_id, json=payload)
 
-base = BaseAPIClient(base_url)
-print(base.view_actionList('CORZZX0MxTQtGyAD7PSCI1HLp3y2'))
+api_client = BaseAPIClient(base_url)

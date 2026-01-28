@@ -1,4 +1,4 @@
-from langchain_core.tools import tool, Tool
+from langchain_core.tools import tool, Tool, StructuredTool
 from langchain_google_community import GoogleSearchAPIWrapper
 from pydantic import BaseModel, Field
 from google.api_core.client_options import ClientOptions
@@ -10,8 +10,9 @@ import requests
 import google
 from urllib.parse import urlparse, parse_qs
 from google.cloud import storage
+from datetime import datetime
 
-from .api_client import view_actionList
+from .api_client import api_client
 from ..core.exceptions import APIError
 
 dotenv.load_dotenv()
@@ -43,6 +44,20 @@ class get_api(BaseModel):
     user_id: str = Field(
         description="User id whos actions are fetched from the database"
     )
+
+class AddActionInput(BaseModel):
+    user_id: str = Field(description="User ID")
+    action_id: str = Field(description="Unique action identifier of type 'action_003'")
+    action_name: str = Field(description="Name of the action")
+    action_type: str = Field(description="Type of action (e.g., energy_efficiency)")
+    action_description: str = Field(description="Detailed description")
+    estimated_spend: float = Field(description="Estimated cost in GBP")
+    estimated_co2_reduced: float = Field(description="Estimated CO2 reduction in tCO2e/year")
+    estimated_revenue_unlocked: float = Field(description="Estimated Revenue potential in GBP")
+    plan_id: str = Field(description="Associated plan ID")
+    timeline_start: datetime = Field(description="Proposed start date")
+    timeline_end: datetime = Field(description="Proposed end date")
+    status: str = Field(description="Current status. Default : not_started")
 
 class ToolList:
     def __init__(self):
@@ -243,15 +258,52 @@ class ToolList:
             self,
             user_id: str
     ) -> dict:
-        """ Fetches all sustainability actions for the user """
+        """ Fetches all sustainability actions for the user. Use this when you want to look up the actions in the database.W"""
         try:
-            return view_actionList(user_id)
+            return api_client.view_actionList(user_id)
         except APIError as e:
             return {
                 "error": {e},
                 "actions": []
             }
         
+    def add_action(
+            self,
+            user_id: str,
+            action_id: str,
+            action_name: str,
+            action_type: str,
+            action_description: str,
+            estimated_spend: float,
+            estimated_co2_reduced: float,
+            estimated_revenue_unlocked: float,
+            plan_id: str,
+            timeline_start: datetime,
+            timeline_end: datetime,
+            status: str
+    ): 
+        """Adds a new sustainability action to the database. This function returns the numbers of rows added to the database. Use this when you need to add a new action to the database."""
+        try:
+            print("Adding new action")
+            action_payload = {
+                "action_id": action_id,
+                "action_name": action_name,
+                "action_type": action_type,
+                "action_description": action_description,
+                "estimated_spend": estimated_spend,
+                "estimated_co2_reduced": estimated_co2_reduced,
+                "estimated_revenue_unlocked": estimated_revenue_unlocked,
+                "plan_id": plan_id,
+                "timeline_start": timeline_start.isoformat(),
+                "timeline_end": timeline_end.isoformat(),
+                "status": status
+            }
+            return api_client.add_action_service(user_id, action_payload)
+        except APIError as e:
+            return {
+                "error": {e}
+            }
+
     # @tool(args_schema=search_input)
     def _search_db(
         self,
@@ -637,6 +689,13 @@ class ToolList:
             func=self.read_actions
         )
 
+        add_action_tool = StructuredTool(
+            name="add_action",
+            description="Adds a new sustainability action to the database. Call directly with required parameters. Do NOT use print() or wrap this call.",
+            args_schema=AddActionInput,
+            func=self.add_action
+        )
+
         vertex_doc_search_tool = Tool(
             name="vertex_doc_search", 
             description="""Search user's internal sustainability documents (electricity bills, invoices, 
@@ -671,6 +730,6 @@ class ToolList:
             func=lambda document_url: self._document_read(document_url), 
         )
 
-        tools_list = [google_search_tool, vertex_doc_search_tool, document_read_tool, read_actions_tool]
+        tools_list = [google_search_tool, vertex_doc_search_tool, document_read_tool, read_actions_tool, add_action_tool]
 
         return tools_list

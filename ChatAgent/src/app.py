@@ -107,11 +107,10 @@ system_instruction_gen = (
     **D. Is the user asking about existing sustainability actions? (Use `read_actions`)**
     * **Definition:** The user wants to know what sustainability actions are already existing in the system. 
 
-    When using tools:
-    - NEVER write code
-    - NEVER use print()
-    - NEVER reference default_api
-    - ALWAYS call tools using JSON arguments only
+    CRITICAL TOOL CALLING RULES:
+    - Call tools directly: add_action(user_id="...", action_id="...")
+    - NEVER wrap tool calls in print(), default_api., or other functions
+    - Use exact parameter names from the tool schema
     - If unsure, ask the user instead of guessing
 
     ---
@@ -246,6 +245,15 @@ system_instruction_plan = (
     * **Definition:** The user is pointing to a specific file or document they have provided or referenced by name.
     * **Triggers:** "Summarize this PDF," "Analyze the attached file," "Read the contract named [filename]."
 
+    **D. Is the user asking about existing sustainability actions? (Use `read_actions`)**
+    * **Definition:** The user wants to know what sustainability actions are already existing in the system. 
+
+    CRITICAL TOOL CALLING RULES:
+    - Call tools directly: add_action(user_id="...", action_id="...")
+    - NEVER wrap tool calls in print(), default_api., or other functions
+    - Use exact parameter names from the tool schema
+    - If unsure, ask the user instead of guessing
+
     ---
 
     ### 2. HANDLING HYBRID QUERIES
@@ -368,6 +376,18 @@ system_instruction_act = (
     **C. Is this a SPECIFIC FILE ANALYSIS? (Use `document_read`)**
     * **Definition:** The user is pointing to a specific file or document they have provided or referenced by name.
     * **Triggers:** "Summarize this PDF," "Analyze the attached file," "Read the contract named [filename]."
+
+    **D. Is the user asking about existing sustainability actions? (Use `read_actions`)**
+    * **Definition:** The user wants to know what sustainability actions are already existing in the system. 
+
+    **E. Is the user asking for an action to be added? (Use `add_action`)**
+    * **Definition:** The user wants add a new action to the database. 
+
+    CRITICAL TOOL CALLING RULES:
+    - Call tools directly: add_action(user_id="...", action_id="...")
+    - NEVER wrap tool calls in print(), default_api., or other functions
+    - Use exact parameter names from the tool schema
+    - If unsure, ask the user instead of guessing
 
     ---
 
