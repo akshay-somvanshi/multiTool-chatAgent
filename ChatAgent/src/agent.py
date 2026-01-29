@@ -43,7 +43,7 @@ class agent:
             # Temperature - degree of randomness
             "temperature": 1.0, 
             # Max output tokens - limit max text output from one promp
-            "max_output_tokens": 1000,
+            "max_output_tokens": 8192,
             # Top p - select x tokens till sum of probability = top_p
             "top_p": 0.95,
             # Top k - next token selected among top-k 

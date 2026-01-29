@@ -143,7 +143,7 @@ system_instruction_gen = (
     "ui_actions": [      // May be empty, but must always exist
         {{
         "type": "show_card | show_list | highlight_action",
-        "payload": object
+        "payload": object      // Show all of the data 
         }}
     ]
     }}
@@ -279,7 +279,7 @@ system_instruction_plan = (
     "ui_actions": [      // May be empty, but must always exist
         {{
         "type": "show_card | show_list | propose_action",
-        "payload": object
+        "payload": object     // Show all of the data 
         }}
     ]
     }}
@@ -414,7 +414,7 @@ system_instruction_act = (
     "ui_actions": [      // May be empty, but must always exist
         {{
         "type": "show_card | show_list | highlight_action | propose_action | add_action | update_action | remove_action",
-        "payload": object
+        "payload": object  // Show all of the data 
         }}
     ]
     }}
