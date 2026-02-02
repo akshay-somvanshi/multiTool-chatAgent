@@ -1,9 +1,10 @@
 # from agent import agent
-from .classifier import classifier
+from classifier import classifier
 # from tools import ToolList, search_input
 from google import genai
 
 from pydantic import BaseModel, Field
+from typing import List, Optional, Any
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -77,7 +78,6 @@ system_instruction_gen = (
     You may ONLY use the following UI intents:
     - `show_card`
     - `show_list`
-    - `highlight_action`
 
     These are informational only and must not imply persistence.
 
@@ -133,14 +133,17 @@ system_instruction_gen = (
 
     ## OUTPUT FORMAT — STRICT CONTRACT
 
-    You MUST return a single valid JSON object.
-    No markdown. No commentary. No extra text.
+    Do NOT wrap JSON inside strings.
+    Do NOT include code fences (no ```json).
+    Do NOT include any fields other than "message" and "ui_actions".
+    Do NOT include explanatory text before or after the JSON.
+    The entire response MUST be a single JSON object.
 
     The response MUST follow this exact schema:
 
     {{
-    "message": string,   // User-facing natural language explanation
-    "ui_actions": [      // May be empty, but must always exist
+    "message": string,   // User-facing natural language explanation. This should not contain any action data.
+    "ui_actions": [      // May be empty, but must always exist. If action data is present, it must be in here.
         {{
         "type": "show_card | show_list | highlight_action",
         "payload": object      // Show all of the data 
@@ -172,8 +175,7 @@ system_instruction_gen = (
     - Do NOT emit a UI action.
     - Return the explanation in "message".
     - Set "ui_actions" to an empty array.
-    
-    Start every response with: **'Doh Gen!'** 
+
 """
 )
 
@@ -213,14 +215,21 @@ system_instruction_plan = (
     2. Ask relevant questions from this list:
     {plan_questions}
     3. Validate data availability.
+    4. THEN propose a structured plan with actions.
+    5. Each action MUST have:
+        - Title
+        - Objective
+        - Estimated impact (CO2, cost, revenue)
+        - Dependencies / prerequisites
+        - Timeline for start and end
+    6. Present plan in UI card or list format.
 
     ---
 
     ## UI OUTPUT RULES
     You may use:
-    - `show_card`
-    - `show_list`
-    - `propose_action`  ← NON-PERSISTENT, requires approval
+    - `show_card` <- For individual action proposals
+    - `show_list` <- For multi-action plans
 
     ---
 
@@ -269,14 +278,17 @@ system_instruction_plan = (
 
     ## OUTPUT FORMAT — STRICT CONTRACT
 
-    You MUST return a single valid JSON object.
-    No markdown. No commentary. No extra text.
+    Do NOT wrap JSON inside strings.
+    Do NOT include code fences (no ```json).
+    Do NOT include any fields other than "message" and "ui_actions".
+    Do NOT include explanatory text before or after the JSON.
+    The entire response MUST be a single JSON object.
 
     The response MUST follow this exact schema:
 
     {{
-    "message": string,   // User-facing natural language explanation
-    "ui_actions": [      // May be empty, but must always exist
+    "message": string,   // User-facing natural language explanation. This should not contain any action data.
+    "ui_actions": [      // May be empty, but must always exist. If action data is present, it must be in here.
         {{
         "type": "show_card | show_list | propose_action",
         "payload": object     // Show all of the data 
@@ -311,7 +323,6 @@ system_instruction_plan = (
     No operational steps.
     No supplier outreach.
 
-    Start every response with: **'Doh Plan!'**
 """
 )
 
@@ -347,11 +358,11 @@ system_instruction_act = (
 
     ## UI ACTION PERMISSIONS
     You may use:
-    - `add_action`
-    - `update_action`
-    - `remove_action`
-    - `show_action`
-    - `highlight_action`
+    - `show_card` <- For individual action details
+    - `show_list`  <- For multi-action overviews
+    - `add_action`  <- To reflect newly created actions
+    - `update_action` <- To reflect modified actions
+    - `remove_action` <- To reflect deleted actions
 
     All of these are **persistent** and affect the dashboard state.
 
@@ -404,14 +415,17 @@ system_instruction_act = (
 
     ## OUTPUT FORMAT — STRICT CONTRACT
 
-    You MUST return a single valid JSON object.
-    No markdown. No commentary. No extra text.
+    Do NOT wrap JSON inside strings.
+    Do NOT include code fences (no ```json).
+    Do NOT include any fields other than "message" and "ui_actions".
+    Do NOT include explanatory text before or after the JSON.
+    The entire response MUST be a single JSON object.
 
     The response MUST follow this exact schema:
 
     {{
-    "message": string,   // User-facing natural language explanation
-    "ui_actions": [      // May be empty, but must always exist
+    "message": string,   // User-facing natural language explanation. This should not contain any action data.
+    "ui_actions": [      // May be empty, but must always exist. If action data is present, it must be in here.
         {{
         "type": "show_card | show_list | highlight_action | propose_action | add_action | update_action | remove_action",
         "payload": object  // Show all of the data 
@@ -447,7 +461,6 @@ system_instruction_act = (
     Tone: Clear, confident, consultant-like.  
     No abstraction. No strategy re-design.
 
-    Start every response with: **'Doh Act!'**
 """
 )
 
@@ -482,9 +495,9 @@ client = genai.Client(
 # response = classifier.invoke(query, "CORZZX0MxTQtGyAD7PSCI1HLp3y2")
 # print(response)
 
-# query = "How is my company doing on the stock market today?"
-# response = classifier.invoke(query, "CORZZX0MxTQtGyAD7PSCI1HLp3y2")
-# print(response)
+query = "How is my company doing on the stock market today?"
+response = classifier.invoke(query, "CORZZX0MxTQtGyAD7PSCI1HLp3y2")
+print(response)
 
 # API setup
 app = FastAPI(title="Chatbot", description="Dash agent", version="0.1")
@@ -501,9 +514,16 @@ class ChatIn(BaseModel):
     message: str = Field(description="User message")
     user_id: str = Field(description="Unique user identifier")
 
+class UIAction(BaseModel):
+    type: str
+    payload: Any  # dict? 
+
+class ChatResponseContent(BaseModel):
+    message: str
+    ui_actions: List[UIAction]
+
 class ChatOut(BaseModel):
-    response: str = Field(description="Agent response")
-    session_id: str = Field(description="Current session id")
+    response: ChatResponseContent
 
 # Default root endpoint as health check
 @app.get("/", status_code=200)
@@ -513,8 +533,8 @@ async def root():
 @app.post("/chat", response_model=ChatOut)
 def chat(body: ChatIn):
     try:
-        response, session_id = classifier.invoke(body.message, body.user_id)
-        return ChatOut(response=response, session_id=session_id)
+        response = classifier.invoke(body.message, body.user_id)
+        return ChatOut(response=response)
     
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"{type(e).__name__}: {e}")

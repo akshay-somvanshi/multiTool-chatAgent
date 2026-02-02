@@ -3,9 +3,11 @@ from langchain_google_vertexai import ChatVertexAI
 import vertexai
 from langchain.agents import create_agent
 from langchain.agents.middleware import wrap_model_call, ModelRequest
-from .firestore import FireStoreChat
+from firestore import FireStoreChat
 
 import os
+import json
+import re
 from datetime import datetime
 from dotenv import load_dotenv
 
@@ -112,18 +114,37 @@ class agent:
         return agent
 
     def _extract_text_content(self, content):
-        """Extract plain text from structured content"""
-        if isinstance(content, str):
-            return content
+        """Try to extract JSON dictionary, fallback to structured text"""
         
-        if isinstance(content, list):
+        # Convert complex content (list/blocks) to a single string first
+        raw_string = ""
+        if isinstance(content, str):
+            raw_string = content
+        elif isinstance(content, list):
             text_parts = []
             for block in content:
                 if isinstance(block, dict) and block.get('type') == 'text':
                     text_parts.append(block.get('text', ''))
-            return '\n\n'.join(text_parts) if text_parts else str(content)
+            raw_string = '\n\n'.join(text_parts)
+        else:
+            raw_string = str(content)
+
+        # Attempt to extract and parse JSON from the raw_string
+        # This regex finds the first '{' and the last '}'
+        json_match = re.search(r'(\{.*\})', raw_string, re.DOTALL)
         
-        return str(content)
+        if json_match:
+            try:
+                return json.loads(json_match.group(1))
+            except json.JSONDecodeError:
+                # If it looks like JSON but is broken, return as a message
+                pass
+
+        # Fallback: If no JSON is found, return the text in the required schema
+        return {
+            "message": raw_string,
+            "ui_actions": []
+        }
     
     def _get_daily_session_id(self, user_id: str) -> str:
         """Create one session per day"""
@@ -179,7 +200,7 @@ class agent:
                 
                 response_content = self._extract_text_content(result["messages"][-1].content)
                 
-                if response_content and response_content.strip():
+                if response_content:
                     break
 
                 raise EmptyLLMResponseError()
@@ -189,7 +210,14 @@ class agent:
                     response_content = "I could not generate a response. Please try again"
         
         # Store as plain text in Firestore if response is non empty to avoid InvalidArg error
-        if response_content and response_content.strip():
-            firestore.add_ai_message(response_content)
+        if response_content:
+            # 1. Decide what to store in Firestore history
+            if isinstance(response_content, dict):
+                # Store just the text message so the AI can read its history later
+                db_text = response_content.get("message", "Data response sent.")
+                firestore.add_ai_message(db_text)
+            else:
+                # Fallback if it somehow returned a string
+                firestore.add_ai_message(str(response_content))
         
-        return response_content, session_id
+        return response_content
