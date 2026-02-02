@@ -21,6 +21,10 @@ class Action(BaseModel):
     estimated_spend: float
     estimated_co2_reduced: float
     estimated_revenue_unlocked: float
+    actual_co2_reduced: float | None
+    actual_spend: float | None
+    actual_revenue_unlocked: float | None
+    actual_time_taken: float | None
     plan_id: str
     timeline_start: datetime
     timeline_end: datetime
