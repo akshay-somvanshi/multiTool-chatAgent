@@ -33,6 +33,13 @@ class Action(BaseModel):
 class ActionList(BaseModel):
     actions: List[Action]
 
+class updateActionPayload(BaseModel):
+    actual_co2_reduced: float | None
+    actual_spend: float | None
+    actual_revenue_unlocked: float | None
+    day_started: datetime | None
+    day_completed: datetime | None
+
 class BaseAPIClient:
     def __init__(self, base_url):
         self.base_url = base_url
@@ -83,5 +90,20 @@ class BaseAPIClient:
         payload: Action
     ):
         return self._make_request(method="POST", endpoint="action", user_id=user_id, json=payload)
+    
+    def remove_action_service(
+        self,
+        user_id: str,
+        action_id: str
+    ):
+        return self._make_request(method="DELETE", endpoint=f"action/{action_id}", user_id=user_id)
+    
+    def update_action_service(
+        self,
+        user_id: str,
+        action_id: str,
+        payload: updateActionPayload
+    ):
+        return self._make_request(method="PUT", endpoint=f"action/{action_id}", user_id=user_id, json=payload)
 
 api_client = BaseAPIClient(base_url)

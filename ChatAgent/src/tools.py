@@ -12,8 +12,8 @@ from urllib.parse import urlparse, parse_qs
 from google.cloud import storage
 from datetime import datetime
 
-from .api_client import api_client
-from ..core.exceptions import APIError
+from api_client import api_client
+# from ..core.exceptions import APIError
 
 dotenv.load_dotenv()
 
@@ -58,6 +58,19 @@ class AddActionInput(BaseModel):
     timeline_start: datetime = Field(description="Proposed start date")
     timeline_end: datetime = Field(description="Proposed end date")
     status: str = Field(description="Current status. Default : not_started")
+
+class UpdateActionInput(BaseModel):
+    user_id: str = Field(description="User ID")
+    action_id: str = Field(description="Unique action identifier of type 'action_003'")
+    actual_co2_reduced: float | None = Field(description="Actual CO2 reduced in tCO2e")
+    actual_spend: float | None = Field(description="Actual spend in GBP")
+    actual_revenue_unlocked: float | None = Field(description="Actual revenue unlocked in GBP")
+    day_started: datetime | None = Field(description="Date when action was started")
+    day_completed: datetime | None = Field(description="Date when action was completed")
+
+class RemoveActionInput(BaseModel):
+    user_id: str = Field(description="User ID")
+    action_id: str = Field(description="Unique action identifier of type 'action_003'")
 
 class ToolList:
     def __init__(self):
@@ -261,7 +274,7 @@ class ToolList:
         """ Fetches all sustainability actions for the user. Use this when you want to look up the actions in the database.W"""
         try:
             return api_client.view_actionList(user_id)
-        except APIError as e:
+        except Exception as e:
             return {
                 "error": {e},
                 "actions": []
@@ -299,7 +312,45 @@ class ToolList:
                 "status": status
             }
             return api_client.add_action_service(user_id, action_payload)
-        except APIError as e:
+        except Exception as e:
+            return {
+                "error": {e}
+            }
+        
+    def remove_action(
+            self,
+            user_id: str,
+            action_id: str
+    ):
+        """Removes a sustainability action from the database. Use this when you need to delete an action from the database."""
+        try:
+            return api_client.remove_action_service(user_id, action_id)
+        except Exception as e:
+            return {
+                "error": {e}
+            }
+        
+    def update_action(
+            self,
+            user_id: str,
+            action_id: str,
+            actual_co2_reduced: float,
+            actual_spend: float,
+            actual_revenue_unlocked: float,
+            day_started: datetime,
+            day_completed: datetime,
+    ):
+        """Updates an existing sustainability action in the database. Use this when you need to update details of an existing action."""
+        try:
+            update_action_payload = {
+                "co2_red": actual_co2_reduced,
+                "spend": actual_spend,
+                "rev_unlocked": actual_revenue_unlocked,
+                "day_start": day_started.isoformat() if day_started else None,
+                "day_end": day_completed.isoformat() if day_completed else None,
+            }
+            return api_client.update_action_service(user_id, action_id, update_action_payload)
+        except Exception as e:
             return {
                 "error": {e}
             }
@@ -696,6 +747,20 @@ class ToolList:
             func=self.add_action
         )
 
+        remove_action_tool = StructuredTool(
+            name="remove_action",
+            description="Removes a sustainability action from the database",
+            args_schema=RemoveActionInput,
+            func=self.remove_action
+        )
+
+        update_action_tool = StructuredTool(
+            name="update_action",
+            description="Updates an existing sustainability action in the database. Call directly with required parameters. Do NOT use print() or wrap this call.",
+            args_schema=UpdateActionInput,
+            func=self.update_action
+        )
+
         vertex_doc_search_tool = Tool(
             name="vertex_doc_search", 
             description="""Search user's internal sustainability documents (electricity bills, invoices, 
@@ -730,6 +795,6 @@ class ToolList:
             func=lambda document_url: self._document_read(document_url), 
         )
 
-        tools_list = [google_search_tool, vertex_doc_search_tool, document_read_tool, read_actions_tool, add_action_tool]
+        tools_list = [google_search_tool, vertex_doc_search_tool, document_read_tool, read_actions_tool, add_action_tool, remove_action_tool, update_action_tool]
 
         return tools_list

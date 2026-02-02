@@ -394,6 +394,12 @@ system_instruction_act = (
     **E. Is the user asking for an action to be added? (Use `add_action`)**
     * **Definition:** The user wants add a new action to the database. 
 
+    **F. Is the user asking for an action to be updated? (Use `update_action`)**
+    * **Definition:** The user wants to update an existing action in the database.
+
+    **G. Is the user asking for an action to be removed? (Use `remove_action`)**
+    * **Definition:** The user wants to delete an existing action from the database.
+
     CRITICAL TOOL CALLING RULES:
     - Call tools directly: add_action(user_id="...", action_id="...")
     - NEVER wrap tool calls in print(), default_api., or other functions
@@ -495,9 +501,9 @@ client = genai.Client(
 # response = classifier.invoke(query, "CORZZX0MxTQtGyAD7PSCI1HLp3y2")
 # print(response)
 
-query = "How is my company doing on the stock market today?"
-response = classifier.invoke(query, "CORZZX0MxTQtGyAD7PSCI1HLp3y2")
-print(response)
+# query = "How is my company doing on the stock market today?"
+# response = classifier.invoke(query, "CORZZX0MxTQtGyAD7PSCI1HLp3y2")
+# print(response)
 
 # API setup
 app = FastAPI(title="Chatbot", description="Dash agent", version="0.1")

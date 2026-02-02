@@ -1,6 +1,6 @@
 from google import genai
-from .tools import ToolList, search_query
-from .agent import agent
+from tools import ToolList, search_query
+from agent import agent
 
 project_id = 'dash-beta-e61d0'
 location = 'europe-west1'
@@ -27,7 +27,7 @@ class classifier():
         Modes:
         1. GENERALIST — basic information, basic research, definitions, general knowledge questions.
         2. PLANNING — user wants structured sustainability planning, assessments, or a future roadmap.
-        3. ACTION — user wants implementation steps, execution guides, timelines, operational detail.
+        3. ACTION — user wants implementation steps, changing action items, timelines, operational detail.
 
         User query: "{query}"
 
