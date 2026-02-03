@@ -52,8 +52,39 @@ class FireStoreChat():
 
         return data
 
-    def load_sessions(self, user_id):
-        pass
+    def load_all_messages(self, current_session_id):
+        session_ref = db.collection("messages").document(self.user_id).collection("sessions")
+        sessions = session_ref.list_documents()
+        data = []
+
+        for session in sessions:
+            # Skip the current session
+            if session.id == current_session_id:
+                continue
+
+            # The session object is a CollectionReference, so we use its ID.
+            list_messages = (db.collection("messages")
+                             .document(self.user_id)
+                             .collection("sessions")
+                             .document(session.id)
+                             .collection("messages")
+                             .order_by("timestamp")
+                             .stream()
+            )
+            for message in list_messages:
+                msg = message.to_dict()
+                content = msg.get("content", "")
+
+                # Skip empty content
+                if not content or not content.strip():
+                    continue
+                
+                if msg["role"] == "user":
+                    data.append(HumanMessage(content=content))
+                else:
+                    data.append(AIMessage(content=content))
+
+        return data
 
     def get_user_context(self):
         user_data = self.user_ref.get().to_dict()

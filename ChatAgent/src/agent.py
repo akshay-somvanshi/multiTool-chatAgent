@@ -151,19 +151,18 @@ class agent:
         today = datetime.now().strftime('%Y%m%d')
         return f"{today}"
     
-    # def _get_session_summary(self, user_id: str):
-    #     """ Retrieve all sessions for this user and summarise each into a single output"""
-    #     data = {"messages": message_history}
+    def _get_session_summary(self, firestore: FireStoreChat, session_id: str = None) -> str:
+        """ Retrieve all previous sessions for this user and summarise each into a single output"""
+        data = firestore.load_all_messages(current_session_id=session_id)
         
-    #     out = self.llm.invoke(f"You are a helpful assistant that summarises conversations briefly, incorporating all important information from the conversation. Summarise the following: {data}")
-    #     print(out)
-    #     return out
+        out = self.llm.invoke(f"You are a helpful assistant that summarises conversations briefly, incorporating all important information from the conversation. Focus on key topics discussed, important user preferences, and any ongoing context. Summarise the following: {data}")
+        summary = out.content if hasattr(out, 'content') else str(out)
+
+        return summary
     
     def invoke_res(self, query: str, user_id: str = None, session_id: str = None):
         max_retries = 2
         session_id = self._get_daily_session_id(user_id)
-        # Temporary check
-        # user_id = "CORZZX0MxTQtGyAD7PSCI1HLp3y2"
 
         firestore = self._init_FireStore(user_id, session_id)
         
@@ -178,17 +177,18 @@ class agent:
             for msg in full_history[-self.max_messages:]
         ]
 
-        # Inject user context in a stateless way
-        recent_messages = [
-            {"role": "system", "content": firestore.get_user_context()},
-            *recent_messages
-        ]
-
-        # Long term summary 
-        # self._get_session_summary(user_id)
-
-        # To combine short and long term messages
-        context_messages = []
+        # Long term summary and user context injection in a stateless way - only if not already present
+        if len(full_history) <= 1:  # Only the query we just added
+            # Load or generate summary from previous sessions
+            summary = self._get_session_summary(firestore, session_id)
+            user_context = firestore.get_user_context()
+            
+            recent_messages = [
+                {"role": "system", "content": user_context},
+                {"role": "system", "content": summary},
+                *recent_messages
+            ]
+            print("Injected user context and session summary into recent messages.")
         
         # Extract text response
         for attempt in range(max_retries):
