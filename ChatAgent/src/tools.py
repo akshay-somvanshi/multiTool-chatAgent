@@ -761,7 +761,7 @@ class ToolList:
             func=self.update_action
         )
 
-        vertex_doc_search_tool = Tool(
+        vertex_doc_search_tool = StructuredTool(
             name="vertex_doc_search", 
             description="""Search user's internal sustainability documents (electricity bills, invoices, 
             emissions reports, consumption data, etc.) using Vertex AI Search. 
@@ -795,6 +795,6 @@ class ToolList:
             func=lambda document_url: self._document_read(document_url), 
         )
 
-        tools_list = [google_search_tool, vertex_doc_search_tool, document_read_tool, read_actions_tool, add_action_tool, remove_action_tool, update_action_tool]
+        tools_list = [google_search_tool, document_read_tool, read_actions_tool, add_action_tool, remove_action_tool, update_action_tool]
 
         return tools_list

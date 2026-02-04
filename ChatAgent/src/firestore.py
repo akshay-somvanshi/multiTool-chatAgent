@@ -1,5 +1,5 @@
 from google.cloud import firestore
-from langchain_core.messages import HumanMessage, AIMessage
+from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
 
 db = firestore.Client()
 
@@ -27,6 +27,13 @@ class FireStoreChat():
             "timestamp": firestore.SERVER_TIMESTAMP
         })
 
+    def add_system_message(self, content):
+        self.ref.add({
+            "role": "system",
+            "content": content,
+            "timestamp": firestore.SERVER_TIMESTAMP
+        })
+
     def add_ai_message(self, content):
         self.ref.add({
             "role": "ai",
@@ -47,6 +54,8 @@ class FireStoreChat():
 
             if msg["role"] == "user":
                 data.append(HumanMessage(content=content))
+            elif msg["role"] == "system":
+                data.append(SystemMessage(content=content))
             else:
                 data.append(AIMessage(content=content))
 

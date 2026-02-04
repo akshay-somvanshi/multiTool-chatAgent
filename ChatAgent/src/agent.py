@@ -158,29 +158,33 @@ class agent:
         max_retries = 2
         session_id = self._get_daily_session_id(user_id)
 
+        # Initialize Firestore for the current user and session
         firestore = self._init_FireStore(user_id, session_id)
         
-        firestore.add_user_message(query)
-        
-        # History containing only messages from the current session
+        # Check if this is the first message in the session to inject context
         current_session_history = firestore.load_messages()
+        is_new_session = len(current_session_history) == 0
 
-        # Limited short term memory 
-        recent_messages = [
-            {"role": msg.type, "content": msg.content}
-            for msg in current_session_history[-self.max_messages:]
-        ]
-
-        # Long term summary and user context injection in a stateless way - only if not already present
-        if len(current_session_history) <= 1:  # Only the query we just added
-            # Load or generate summary from previous sessions
-            summary = self._get_session_summary(firestore, session_id)
+        if is_new_session:
+            print("New session detected. Injecting user context and session summary.")
+            # 1. Get the long-term user profile context.
             user_context = firestore.get_user_context()
             
-            # Prepend context and summary to the message list
-            recent_messages.insert(0, {"role": "system", "content": summary})
-            recent_messages.insert(0, {"role": "system", "content": user_context})
-            print("Injected user context and session summary into recent messages.")
+            # 2. Generate a summary of all *previous* conversations.
+            summary = self._get_session_summary(firestore, session_id)
+            
+            # 3. Save these as the first messages in the new session's history.
+            if user_context:
+                firestore.add_system_message(user_context)
+            if summary:
+                firestore.add_system_message(summary)
+
+        # Add the current user query to the history
+        firestore.add_user_message(query)
+        
+        # Load the complete history for this session, including the newly added context and query
+        current_session_history = firestore.load_messages()
+        recent_messages = [{"role": msg.type, "content": msg.content} for msg in current_session_history[-self.max_messages:]]
         
         # Extract text response
         for attempt in range(max_retries):
