@@ -52,6 +52,24 @@ class agent:
             "top_k": None,
             "safety_settings": self.safety_settings
         }
+        
+        # --- Optimisation: Pre-initialize models ---
+        # Initialize models once and reuse them to avoid client creation latency on every request.
+        self.basic_llm = ChatVertexAI(
+            model_name=self.basic_model,
+            temperature=self.model_kwargs.get('temperature'),
+            max_tokens=self.model_kwargs.get('max_output_tokens'),
+            top_p=self.model_kwargs.get('top_p'),
+            top_k=self.model_kwargs.get('top_k'),
+        ).bind_tools(self.tool_list)
+
+        self.advanced_llm = ChatVertexAI(
+            model_name=self.advanced_model,
+            temperature=self.model_kwargs.get('temperature'),
+            max_tokens=self.model_kwargs.get('max_output_tokens'),
+            top_p=self.model_kwargs.get('top_p'),
+            top_k=self.model_kwargs.get('top_k'),
+        ).bind_tools(self.tool_list)
 
         # Enable switching to pro model 
         @wrap_model_call
@@ -61,26 +79,14 @@ class agent:
 
             # Choose larger model for longer conversations 
             if message_count > 10:
-                # print(f"Selecting Advanced Model ({self.advanced_model})")
-                model_name = self.advanced_model
+                model = self.advanced_llm
             else:
-                # print(f"Selecting Basic Model ({self.basic_model})")
-                model_name = self.basic_model
-            
-            # Bind model to google search
-            model = ChatVertexAI(
-                model_name=model_name,
-                temperature=self.model_kwargs.get('temperature'),
-                max_tokens=self.model_kwargs.get('max_output_tokens'),
-                top_p=self.model_kwargs.get('top_p'),
-                top_k=self.model_kwargs.get('top_k'),
-                # safety_settings=model_kwargs.get('safety_settings'),
-            ).bind_tools(self.tool_list)
+                model = self.basic_llm
 
             return handler(request.override(model=model))
 
         self._model_selection = _model_selection
-        self.llm = self._create_llm()
+        self.llm = self.basic_llm # Use basic_llm
         self.agent = self._create_agent(self.llm)
 
     def _init_FireStore(self, user_id: str, session_id: str = None):
@@ -90,18 +96,6 @@ class agent:
             session_id=session_id
         )
     
-    def _create_llm(self):
-        llm = ChatVertexAI(
-            model_name=self.basic_model,
-            temperature=self.model_kwargs.get('temperature'),
-            max_tokens=self.model_kwargs.get('max_output_tokens'),
-            top_p=self.model_kwargs.get('top_p'),
-            top_k=self.model_kwargs.get('top_k'),
-            # safety_settings=model_kwargs.get('safety_settings'),
-        ).bind_tools(self.tool_list)
-
-        return llm
-
     def _create_agent(self, llm):
         # Create agent
         agent = create_agent(
