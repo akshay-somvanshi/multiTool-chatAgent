@@ -7,9 +7,9 @@ from requests.adapters import HTTPAdapter
 
 # from ..core.exceptions import APIError
 class APIError(Exception):
-    def __init__(self, message, error):
+    def __init__(self, message, status_code=None, error=None):
         super().__init__(message)
-        self.error = error 
+        self.status_code = status_code
 
 base_url = "https://api-app-441601669115.europe-west1.run.app/"
 
@@ -62,9 +62,11 @@ class BaseAPIClient:
             res.raise_for_status()
             return res.json()
         except requests.Timeout:
-            raise APIError("Request timed out", None)
+            raise APIError("API request timed out", status_code=408)
+        except requests.exceptions.HTTPError as e:
+            raise APIError(f"API request failed with status {e.response.status_code}: {e.response.text}", status_code=e.response.status_code)
         except Exception as e:
-            raise APIError(f"Failed to {method} {endpoint}", e)
+            raise APIError(f"An unexpected error occurred during API request to {endpoint}: {e}")
 
     def view_actionList(
         self,

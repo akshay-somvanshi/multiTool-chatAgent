@@ -162,26 +162,24 @@ class agent:
         
         firestore.add_user_message(query)
         
-        # History containing only messages from current session
-        full_history = firestore.load_messages()
+        # History containing only messages from the current session
+        current_session_history = firestore.load_messages()
 
         # Limited short term memory 
         recent_messages = [
             {"role": msg.type, "content": msg.content}
-            for msg in full_history[-self.max_messages:]
+            for msg in current_session_history[-self.max_messages:]
         ]
 
         # Long term summary and user context injection in a stateless way - only if not already present
-        if len(full_history) <= 1:  # Only the query we just added
+        if len(current_session_history) <= 1:  # Only the query we just added
             # Load or generate summary from previous sessions
             summary = self._get_session_summary(firestore, session_id)
             user_context = firestore.get_user_context()
             
-            recent_messages = [
-                {"role": "system", "content": user_context},
-                {"role": "system", "content": summary},
-                *recent_messages
-            ]
+            # Prepend context and summary to the message list
+            recent_messages.insert(0, {"role": "system", "content": summary})
+            recent_messages.insert(0, {"role": "system", "content": user_context})
             print("Injected user context and session summary into recent messages.")
         
         # Extract text response
