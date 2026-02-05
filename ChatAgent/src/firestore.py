@@ -42,24 +42,31 @@ class FireStoreChat():
         })
 
     def load_messages(self):
-        list_messages = self.ref.order_by("timestamp").stream()
-        data = []
-        for message in list_messages:
-            msg = message.to_dict()
-            content = msg.get("content", "")
+        try:
+            list_messages = self.ref.order_by("timestamp").stream()
+            data = []
+            for message in list_messages:
+                msg = message.to_dict()
+                content = msg.get("content", "")
 
-            # Skip empty content
-            if not content or not content.strip():
-                continue
+                if isinstance(content, list):
+                    content = content[0].get("text", "") 
 
-            if msg["role"] == "user":
-                data.append(HumanMessage(content=content))
-            elif msg["role"] == "system":
-                data.append(SystemMessage(content=content))
-            else:
-                data.append(AIMessage(content=content))
+                # Skip empty content
+                if not content or not content.strip():
+                    continue
 
-        return data
+                if msg["role"] == "user":
+                    data.append(HumanMessage(content=content))
+                elif msg["role"] == "system":
+                    data.append(SystemMessage(content=content))
+                else:
+                    data.append(AIMessage(content=content))
+
+            return data
+        except Exception as e:
+            print(f"Error loading messages: {e}")
+            return []
 
     def load_all_messages(self, current_session_id):
         session_ref = db.collection("messages").document(self.user_id).collection("sessions")

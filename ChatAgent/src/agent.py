@@ -150,7 +150,10 @@ class agent:
         data = firestore.load_all_messages(current_session_id=session_id)
         
         out = self.llm.invoke(f"You are a helpful assistant that summarises conversations briefly, incorporating all important information from the conversation. Focus on key topics discussed, important user preferences, and any ongoing context. Summarise the following: {data}")
-        summary = out.content if hasattr(out, 'content') else str(out)
+        if(hasattr(out, 'content')):
+            summary = out.content
+        else:
+            summary = str(out)
 
         return summary
     

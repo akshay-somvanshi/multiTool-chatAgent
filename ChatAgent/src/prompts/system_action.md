@@ -99,7 +99,7 @@ The response MUST follow this exact schema:
 
 {{
 "message": "string",   // User-facing natural language explanation. This should not contain any action data.
-"ui_actions": [      // May be empty, but must always exist. If action data is present, it must be in here.
+"ui_actions": [      // May be empty, but must always exist. This should only be used for action data. If action data is present, it must be in here.
     {{
     "type": "show_card | show_list | highlight_action | propose_action | add_action | update_action | remove_action",
     "payload": "object"  // Show all of the data 
