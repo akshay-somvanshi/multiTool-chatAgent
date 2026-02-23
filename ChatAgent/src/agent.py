@@ -8,6 +8,7 @@ from firestore import FireStoreChat
 import os
 import json
 import re
+import asyncio
 from datetime import datetime
 from dotenv import load_dotenv
 
@@ -73,6 +74,19 @@ class agent:
 
         # Enable switching to pro model 
         @wrap_model_call
+        async def _amodel_selection(request: ModelRequest, handler):
+            """Choose model based on conversation complexity"""
+            message_count = len(request.state["messages"])
+
+            # Choose larger model for longer conversations 
+            if message_count > 10:
+                model = self.advanced_llm
+            else:
+                model = self.basic_llm
+
+            return await handler(request.override(model=model))
+
+        @wrap_model_call
         def _model_selection(request: ModelRequest, handler):
             """Choose model based on conversation complexity"""
             message_count = len(request.state["messages"])
@@ -85,7 +99,7 @@ class agent:
 
             return handler(request.override(model=model))
 
-        self._model_selection = _model_selection
+        self._model_selection = _amodel_selection
         self.llm = self.basic_llm # Use basic_llm
         self.agent = self._create_agent(self.llm)
 
@@ -145,9 +159,115 @@ class agent:
         today = datetime.now().strftime('%Y%m%d')
         return f"{today}"
     
+    async def _ainvoke_llm(self, prompt: str):
+        """Async call to the LLM"""
+        out = await self.llm.ainvoke(prompt)
+        if hasattr(out, 'content'):
+            return out.content
+        return str(out)
+
+    async def _aget_session_summary(self, firestore: FireStoreChat, session_id: str = None) -> str:
+        """ Retrieve all previous sessions for this user and summarise each into a single output"""
+        # Run synchronous Firestore call in a thread
+        data = await asyncio.to_thread(firestore.load_all_messages, session_id)
+        
+        if not data:
+            return ""
+
+        summary = await self._ainvoke_llm(f"You are a helpful assistant that summarises conversations briefly, incorporating all important information from the conversation. Focus on key topics discussed, important user preferences, and any ongoing context. Summarise the following: {data}")
+        return summary
+    
+    async def ainvoke_res(self, query: str, user_id: str = None, session_id: str = None):
+        import time
+        total_start = time.perf_counter()
+        max_retries = 2
+        session_id = self._get_daily_session_id(user_id)
+
+        # Initialize Firestore for the current user and session
+        firestore = self._init_FireStore(user_id, session_id)
+
+        # Check if this is the first message in the session to inject context
+        step_start = time.perf_counter()
+        current_session_history = await asyncio.to_thread(firestore.load_messages)
+        is_new_session = len(current_session_history) == 0
+        # # print(f"[Profiling] Firestore load_messages took {time.perf_counter() - step_start:.2f}s")
+
+        if is_new_session:
+            print("New session detected. Injecting user context and session summary.")
+            step_start = time.perf_counter()
+            # Run user context fetch and summary generation concurrently
+            user_context_task = asyncio.to_thread(firestore.get_user_context)
+            summary_task = self._aget_session_summary(firestore, session_id)
+            
+            user_context, summary = await asyncio.gather(user_context_task, summary_task)
+            # print(f"[Profiling] Session Initialization (Summary + Context) took {time.perf_counter() - step_start:.2f}s")
+            
+            # 3. Save these as the first messages in the new session's history.
+            # We can parallelize these writes too
+            step_start = time.perf_counter()
+            write_tasks = []
+            if user_context:
+                write_tasks.append(asyncio.to_thread(firestore.add_system_message, user_context))
+            if summary:
+                write_tasks.append(asyncio.to_thread(firestore.add_system_message, summary))
+            
+            if write_tasks:
+                await asyncio.gather(*write_tasks)
+            # print(f"[Profiling] Initial Firestore writes took {time.perf_counter() - step_start:.2f}s")
+
+        # Add the current user query to the history
+        step_start = time.perf_counter()
+        await asyncio.to_thread(firestore.add_user_message, query)
+        # print(f"[Profiling] Add user message to Firestore took {time.perf_counter() - step_start:.2f}s")
+        
+        # Load the complete history for this session, including the newly added context and query
+        step_start = time.perf_counter()
+        current_session_history = await asyncio.to_thread(firestore.load_messages)
+        recent_messages = [{"role": msg.type, "content": msg.content} for msg in current_session_history[-self.max_messages:]]
+        # print(f"[Profiling] Reloading history took {time.perf_counter() - step_start:.2f}s")
+        
+        # Extract text response
+        response_content = None
+        for attempt in range(max_retries):
+            try:
+                step_start = time.perf_counter()
+                result = await self.agent.ainvoke({"messages": recent_messages})
+                # print(f"[Profiling] LLM Agent (attempt {attempt+1}) took {time.perf_counter() - step_start:.2f}s")
+                
+                if result.get("finish_reason") == "MALFORMED_FUNCTION_CALL":
+                    raise RuntimeError("Tool call failed due to malformed arguments")
+                
+                response_content = self._extract_text_content(result["messages"][-1].content)
+                
+                if response_content:
+                    break
+
+                raise EmptyLLMResponseError()
+            
+            except EmptyLLMResponseError as e:
+                if attempt == max_retries-1:
+                    response_content = {"message": "I could not generate a response. Please try again", "ui_actions": []}
+        
+        # Store as plain text in Firestore if response is non empty to avoid InvalidArg error
+        if response_content:
+            # 1. Decide what to store in Firestore history
+            if isinstance(response_content, dict):
+                # Store just the text message so the AI can read its history later
+                db_text = response_content.get("message", "Data response sent.")
+                # Non-blocking firestore write
+                asyncio.create_task(asyncio.to_thread(firestore.add_ai_message, db_text))
+            else:
+                # Fallback if it somehow returned a string
+                asyncio.create_task(asyncio.to_thread(firestore.add_ai_message, str(response_content)))
+        
+        # print(f"[Profiling] TOTAL ainvoke_res took {time.perf_counter() - total_start:.2f}s")
+        return response_content
+
     def _get_session_summary(self, firestore: FireStoreChat, session_id: str = None) -> str:
         """ Retrieve all previous sessions for this user and summarise each into a single output"""
         data = firestore.load_all_messages(current_session_id=session_id)
+        if not data:
+            return ""
         
         out = self.llm.invoke(f"You are a helpful assistant that summarises conversations briefly, incorporating all important information from the conversation. Focus on key topics discussed, important user preferences, and any ongoing context. Summarise the following: {data}")
         if(hasattr(out, 'content')):

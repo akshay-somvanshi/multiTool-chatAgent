@@ -71,10 +71,6 @@ client = genai.Client(
 # response = classifier.invoke(query, "CORZZX0MxTQtGyAD7PSCI1HLp3y2")
 # print(response)
 
-query = "Who won the nobel prize in chemistry in 2025?"
-response = classifier.invoke(query, "CORZZX0MxTQtGyAD7PSCI1HLp3y2")
-print(response)
-
 # API setup
 app = FastAPI(title="Chatbot", description="Dash agent", version="0.1")
 
@@ -107,9 +103,9 @@ async def root():
     return {"message": "The chatbot seems to be up and running!"}
 
 @app.post("/chat", response_model=ChatOut)
-def chat(body: ChatIn):
+async def chat(body: ChatIn):
     try:
-        response = classifier.invoke(body.message, body.user_id)
+        response = await classifier.ainvoke(body.message, body.user_id)
         return ChatOut(response=response)
     
     except Exception as e:
