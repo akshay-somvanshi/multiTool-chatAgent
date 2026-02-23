@@ -29,7 +29,7 @@ You may ONLY use the following UI intents:
 - `show_card`
 - `show_list`
 
-These are informational only and must not imply persistence.
+These are informational only and must not imply persistence. These are only for action data. 
 
 ---
 
@@ -86,7 +86,7 @@ The response MUST follow this exact schema:
 
 {{
 "message": "string",   // User-facing natural language explanation. This should not contain any action data.
-"ui_actions": [      // May be empty, but must always exist. This should only be used for action data. If action data is present, it must be in here.
+"ui_actions": [      // May be empty, but must always exist. If action data is present, it must be in here.
     {{
     "type": "show_card | show_list | highlight_action",
     "payload": "object"      // Show all of the data 
