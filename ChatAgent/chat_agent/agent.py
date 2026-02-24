@@ -3,7 +3,7 @@ from langchain_google_vertexai import ChatVertexAI
 import vertexai
 from langchain.agents import create_agent
 from langchain.agents.middleware import wrap_model_call, ModelRequest
-from firestore import FireStoreChat
+from chat_agent.firestore import FireStoreChat
 
 import os
 import json

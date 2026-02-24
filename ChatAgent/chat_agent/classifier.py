@@ -1,8 +1,8 @@
 from google import genai
 import time
 
-from tools import ToolList, search_query
-from agent import agent
+from chat_agent.tools import ToolList, search_query
+from chat_agent.agent import agent
 
 project_id = 'dash-beta-e61d0'
 location = 'europe-west1'

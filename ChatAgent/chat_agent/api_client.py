@@ -5,11 +5,7 @@ from typing import List
 from urllib3.util.retry import Retry
 from requests.adapters import HTTPAdapter
 
-# from ..core.exceptions import APIError
-class APIError(Exception):
-    def __init__(self, message, status_code=None, error=None):
-        super().__init__(message)
-        self.status_code = status_code
+from chat_agent.core.exceptions import APIError
 
 base_url = "https://api-app-441601669115.europe-west1.run.app/"
 

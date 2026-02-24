@@ -3,10 +3,7 @@ import timeit
 import sys
 import os
 
-# Ensure we can import from src
-sys.path.append(os.path.join(os.getcwd(), 'src'))
-
-from classifier import classifier
+from chat_agent.classifier import classifier
 
 async def run_test():
     # These instructions usually come from app.py, but we mock them here for the test
@@ -25,7 +22,7 @@ async def run_test():
     print(f"\nRunning Async Test with Query: {query}")
     
     start_time = timeit.default_timer()
-    response = await c.ainvoke(query, "CORZZX0MxTQtGyAD7PSCI1HLp3y2")
+    response = await c.ainvoke(query, "QLRmwioROPcNz3t80XzUhn9icey1")
     end_time = timeit.default_timer()
     
     print(f"\n[Test Result] Time taken: {end_time - start_time:.2f}s")

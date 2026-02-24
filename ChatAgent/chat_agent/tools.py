@@ -12,8 +12,8 @@ from urllib.parse import urlparse, parse_qs
 from google.cloud import storage
 from datetime import datetime
 
-from api_client import api_client
-# from ..core.exceptions import APIError
+from chat_agent.api_client import api_client
+from chat_agent.core.exceptions import APIError
 
 dotenv.load_dotenv()
 
