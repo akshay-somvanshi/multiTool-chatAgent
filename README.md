@@ -51,17 +51,21 @@ Follow these steps to get your multiTool-chatAgent up and running.
 
 3.  **Install Python Dependencies:**
     ```bash
+    cd ChatAgent
     pip install -r requirements.txt
+    pip install -e .
     ```
 
 ### Running the Application
 
 #### Locally (without Docker)
 
+From the `ChatAgent` directory:
+
 ```bash
-uvicorn src.app:app --host 0.0.0.0 --port 8080 --log-level debug
+fastapi dev chat_agent/app.py
 ```
-The application will be accessible at `http://localhost:8080`.
+The application will be accessible at `http://127.0.0.1:8000`.
 
 #### Using Docker
 
@@ -80,20 +84,35 @@ The application will be accessible at `http://localhost:8080`.
 ## Project Structure
 
 ```
-.
-├── cloudbuild.yaml       # Google Cloud Build configuration
-├── data/                 # Placeholder for any data files (e.g., sample documents)
-├── Dockerfile            # Dockerfile for containerizing the application
-├── README.md             # This README file
-├── requirements.txt      # Python dependencies
-├── sandbox.py            # Development/testing sandbox
-├── src/                  # Main application source code
-│   ├── __init__.py       # Initializes the Python package
-│   ├── agent.py          # Core Langchain agent logic and setup
-│   ├── app.py            # FastAPI application definition and endpoints
-│   ├── classifier.py     # Module for classifying user intent/messages
-│   ├── firestore.py      # Firestore integration for chat history and context
-│   └── tools.py          # Definitions of the various tools the agent can use
-└── tools/                # Auxiliary scripts or tool configurations
-    └── commands_set.sh   # Collection of gcloud commands for deployment/configuration
+ChatAgent/
+├── chat_agent/           # Main application package
+│   ├── core/             # Core logic and exceptions
+│   ├── data/             # Planning questions and data files
+│   ├── prompts/          # System instructions and prompts
+│   ├── __init__.py
+│   ├── agent.py          # Core Langchain agent logic
+│   ├── app.py            # FastAPI application definition
+│   ├── classifier.py     # Intent classification logic
+│   ├── firestore.py      # Firestore integration
+│   └── tools.py          # Tool definitions
+├── test/                 # Test suite
+│   └── test_async.py
+├── setup.py              # Installation script for editable mode
+├── pyproject.toml        # Package configuration and dependencies
+├── requirements.txt      # Legacy requirements file
+└── Dockerfile            # Container definition
+```
+
+### Troubleshooting
+If you encounter `ModuleNotFoundError: No module named 'chat_agent'` or permission errors during `pip install`, use `PYTHONPATH` to run your application without installation:
+
+```bash
+# From the ChatAgent directory
+export PYTHONPATH=$PYTHONPATH:.
+fastapi dev chat_agent/app.py
+```
+
+Or run as a one-liner:
+```bash
+PYTHONPATH=. fastapi dev chat_agent/app.py
 ```
