@@ -1,6 +1,8 @@
 from google.cloud import firestore
 from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
 
+import time
+
 db = firestore.Client()
 
 # Wrapper for Firestore to be able to store and retrieve messages
@@ -68,30 +70,30 @@ class FireStoreChat():
             print(f"Error loading messages: {e}")
             return []
 
-    def load_all_messages(self, current_session_id):
-        session_ref = db.collection("messages").document(self.user_id).collection("sessions")
-        sessions = session_ref.list_documents()
-        data = []
+    def load_session_list(self):
+        """List all session document references for this user."""
+        try:
+            session_ref = db.collection("messages").document(self.user_id).collection("sessions")
+            return session_ref.list_documents()
+        except Exception as e:
+            print(f"Error listing sessions: {e}")
+            return []
 
-        for session in sessions:
-            # Skip the current session
-            if session.id == current_session_id:
-                continue
-
-            # The session object is a CollectionReference, so we use its ID.
+    def load_messages_by_id(self, session_id):
+        """Load messages for a specific session ID."""
+        try:
             list_messages = (db.collection("messages")
                              .document(self.user_id)
                              .collection("sessions")
-                             .document(session.id)
+                             .document(session_id)
                              .collection("messages")
                              .order_by("timestamp")
                              .stream()
             )
+            data = []
             for message in list_messages:
                 msg = message.to_dict()
                 content = msg.get("content", "")
-
-                # Skip empty content
                 if not content or not content.strip():
                     continue
                 
@@ -99,10 +101,23 @@ class FireStoreChat():
                     data.append(HumanMessage(content=content))
                 else:
                     data.append(AIMessage(content=content))
+            return data
+        except Exception as e:
+            print(f"Error loading session {session_id}: {e}")
+            return []
 
+    def load_all_messages(self, current_session_id):
+        # Kept for backward compatibility, but we should use the parallel version
+        sessions = self.load_session_list()
+        data = []
+        for session in sessions:
+            if session.id == current_session_id:
+                continue
+            data.extend(self.load_messages_by_id(session.id))
         return data
 
     def get_user_context(self):
+        start_time = time.perf_counter()
         user_data = self.user_ref.get().to_dict()
 
         if user_data['sustainability_strategy']:
@@ -126,5 +141,7 @@ class FireStoreChat():
             f"Their user_id is {self.user_id}" 
         ) 
         
+        print(f"[Profiling] User Context took {time.perf_counter() - start_time:.2f}s")
+
         return context
         

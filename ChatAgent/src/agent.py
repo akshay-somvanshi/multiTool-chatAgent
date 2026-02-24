@@ -8,6 +8,7 @@ from firestore import FireStoreChat
 import os
 import json
 import re
+import time
 import asyncio
 from datetime import datetime
 from dotenv import load_dotenv
@@ -17,6 +18,7 @@ load_dotenv()
 project_id = os.getenv('GOOGLE_PROJECT_ID', 'dash-beta-e61d0')
 location = os.getenv('GOOGLE_LOCATION', 'europe-west1')
 vertexai.init(project=project_id, location=location)
+location_global = 'global'
 
 class EmptyLLMResponseError(Exception):
     pass
@@ -24,7 +26,7 @@ class EmptyLLMResponseError(Exception):
 class agent:
     def __init__(self, model_name: str,  system_prompt: str, tool_set, search_input):
         self.basic_model = model_name
-        self.advanced_model = "gemini-2.5-pro"
+        self.advanced_model = "gemini-3.1-pro-preview"
 
         self.tool_list = tool_set
         self.system_prompt = system_prompt
@@ -62,6 +64,7 @@ class agent:
             max_tokens=self.model_kwargs.get('max_output_tokens'),
             top_p=self.model_kwargs.get('top_p'),
             top_k=self.model_kwargs.get('top_k'),
+            location="global"
         ).bind_tools(self.tool_list)
 
         self.advanced_llm = ChatVertexAI(
@@ -70,7 +73,15 @@ class agent:
             max_tokens=self.model_kwargs.get('max_output_tokens'),
             top_p=self.model_kwargs.get('top_p'),
             top_k=self.model_kwargs.get('top_k'),
+            location="global"
         ).bind_tools(self.tool_list)
+
+        # Use Flash for summaries to save time and cost
+        self.summary_llm = ChatVertexAI(
+            model_name="gemini-3-flash-preview",
+            temperature=0.0, # Deterministic for summaries
+            location="global"
+        )
 
         # Enable switching to pro model 
         @wrap_model_call
@@ -159,26 +170,46 @@ class agent:
         today = datetime.now().strftime('%Y%m%d')
         return f"{today}"
     
-    async def _ainvoke_llm(self, prompt: str):
+    async def _ainvoke_llm(self, prompt: str, use_summary_model=False):
         """Async call to the LLM"""
-        out = await self.llm.ainvoke(prompt)
+        llm = self.summary_llm if use_summary_model else self.llm
+        out = await llm.ainvoke(prompt)
         if hasattr(out, 'content'):
             return out.content
         return str(out)
 
     async def _aget_session_summary(self, firestore: FireStoreChat, session_id: str = None) -> str:
         """ Retrieve all previous sessions for this user and summarise each into a single output"""
-        # Run synchronous Firestore call in a thread
-        data = await asyncio.to_thread(firestore.load_all_messages, session_id)
+        load_start = time.perf_counter()
+        # 1. Get list of sessions
+        sessions = await asyncio.to_thread(firestore.load_session_list)
+        
+        # 2. Load all sessions in parallel
+        tasks = []
+        for s in sessions:
+            if s.id != session_id:
+                tasks.append(asyncio.to_thread(firestore.load_messages_by_id, s.id))
+        
+        if not tasks:
+            return ""
+            
+        all_session_data = await asyncio.gather(*tasks)
+        # Flatten the list of lists
+        data = [msg for session_list in all_session_data for msg in session_list]
+        print(f"[Profiling] Firestore Parallel Load ({len(tasks)} sessions) took {time.perf_counter() - load_start:.2f}s")
         
         if not data:
             return ""
 
-        summary = await self._ainvoke_llm(f"You are a helpful assistant that summarises conversations briefly, incorporating all important information from the conversation. Focus on key topics discussed, important user preferences, and any ongoing context. Summarise the following: {data}")
+        summary_start = time.perf_counter()
+        summary = await self._ainvoke_llm(
+            f"You are a helpful assistant that summarises conversations briefly, incorporating all important information from the conversation. Focus on key topics discussed, important user preferences, and any ongoing context. Summarise the following: {data}",
+            use_summary_model=True
+        )
+        print(f'[Profiling] Summary generation (Flash) took {time.perf_counter() - summary_start:.2f}s')
         return summary
     
     async def ainvoke_res(self, query: str, user_id: str = None, session_id: str = None):
-        import time
         total_start = time.perf_counter()
         max_retries = 2
         session_id = self._get_daily_session_id(user_id)
@@ -190,7 +221,7 @@ class agent:
         step_start = time.perf_counter()
         current_session_history = await asyncio.to_thread(firestore.load_messages)
         is_new_session = len(current_session_history) == 0
-        # # print(f"[Profiling] Firestore load_messages took {time.perf_counter() - step_start:.2f}s")
+        print(f"[Profiling] Firestore load_messages took {time.perf_counter() - step_start:.2f}s")
 
         if is_new_session:
             print("New session detected. Injecting user context and session summary.")
@@ -200,7 +231,7 @@ class agent:
             summary_task = self._aget_session_summary(firestore, session_id)
             
             user_context, summary = await asyncio.gather(user_context_task, summary_task)
-            # print(f"[Profiling] Session Initialization (Summary + Context) took {time.perf_counter() - step_start:.2f}s")
+            print(f"[Profiling] Session Initialization (Summary + Context) took {time.perf_counter() - step_start:.2f}s")
             
             # 3. Save these as the first messages in the new session's history.
             # We can parallelize these writes too
@@ -213,18 +244,18 @@ class agent:
             
             if write_tasks:
                 await asyncio.gather(*write_tasks)
-            # print(f"[Profiling] Initial Firestore writes took {time.perf_counter() - step_start:.2f}s")
+            print(f"[Profiling] Initial Firestore writes took {time.perf_counter() - step_start:.2f}s")
 
         # Add the current user query to the history
         step_start = time.perf_counter()
         await asyncio.to_thread(firestore.add_user_message, query)
-        # print(f"[Profiling] Add user message to Firestore took {time.perf_counter() - step_start:.2f}s")
+        print(f"[Profiling] Add user message to Firestore took {time.perf_counter() - step_start:.2f}s")
         
         # Load the complete history for this session, including the newly added context and query
         step_start = time.perf_counter()
         current_session_history = await asyncio.to_thread(firestore.load_messages)
         recent_messages = [{"role": msg.type, "content": msg.content} for msg in current_session_history[-self.max_messages:]]
-        # print(f"[Profiling] Reloading history took {time.perf_counter() - step_start:.2f}s")
+        print(f"[Profiling] Reloading history took {time.perf_counter() - step_start:.2f}s")
         
         # Extract text response
         response_content = None
@@ -232,7 +263,7 @@ class agent:
             try:
                 step_start = time.perf_counter()
                 result = await self.agent.ainvoke({"messages": recent_messages})
-                # print(f"[Profiling] LLM Agent (attempt {attempt+1}) took {time.perf_counter() - step_start:.2f}s")
+                print(f"[Profiling] LLM Agent (attempt {attempt+1}) took {time.perf_counter() - step_start:.2f}s")
                 
                 if result.get("finish_reason") == "MALFORMED_FUNCTION_CALL":
                     raise RuntimeError("Tool call failed due to malformed arguments")
@@ -260,7 +291,7 @@ class agent:
                 # Fallback if it somehow returned a string
                 asyncio.create_task(asyncio.to_thread(firestore.add_ai_message, str(response_content)))
         
-        # print(f"[Profiling] TOTAL ainvoke_res took {time.perf_counter() - total_start:.2f}s")
+        print(f"[Profiling] TOTAL ainvoke_res took {time.perf_counter() - total_start:.2f}s")
         return response_content
 
     def _get_session_summary(self, firestore: FireStoreChat, session_id: str = None) -> str:

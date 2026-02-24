@@ -6,17 +6,17 @@ from agent import agent
 
 project_id = 'dash-beta-e61d0'
 location = 'europe-west1'
+location_global = 'global'
 
 class classifier():
     def __init__(self, system_instruction_gen, system_instruction_plan, system_instruction_act):
         self.client = genai.Client(
             vertexai=True,
             project=project_id,
-            location=location
+            location=location_global
         )
         
-        self.model = 'gemini-2.5-pro'
-        self.classifier_model = 'gemini-2.5-flash'
+        self.model = 'gemini-3-flash-preview'
 
         self.tool = ToolList()
         self.generalist = agent(self.model, system_instruction_gen, self.tool.get_tools(), search_query)
@@ -24,7 +24,7 @@ class classifier():
         self.action = agent(self.model, system_instruction_act, self.tool.get_tools(), search_query)
 
     async def ainvoke(self, query, user_id=None):
-        # start = time.perf_counter()
+        start = time.perf_counter()
         prompt = f"""
         You are a classifier that decides which operational mode to use.
 
@@ -42,10 +42,10 @@ class classifier():
         """
         # Using .aio for true async call with google-genai SDK
         response = await self.client.aio.models.generate_content(
-            model=self.classifier_model,
+            model=self.model,
             contents=prompt
         )
-        # print(f"[Profiling] Classifier ({self.classifier_model}) took {time.perf_counter() - start:.2f}s")
+        print(f"[Profiling] Classifier ({self.model}) took {time.perf_counter() - start:.2f}s")
 
         if response.text.strip() == "GENERALIST":
             return await self.generalist.ainvoke_res(query, user_id)
