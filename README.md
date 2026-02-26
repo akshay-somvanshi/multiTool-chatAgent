@@ -1,6 +1,6 @@
 # multiTool-chatAgent
 
-Latest developments: [<image-card alt="dev branch" src="https://img.shields.io/badge/branch-dev-blue" ></image-card>](https://github.com/akshay-somvanshi/multiTool-chatAgent/tree/dev)
+Latest developments: ![Static Badge](https://img.shields.io/badge/github-dev-blue?link=https%3A%2F%2Fgithub.com%2Fakshay-somvanshi%2FmultiTool-chatAgent%2Ftree%2Fdev)
 
 A conversational AI agent built with Langchain and Google Vertex AI, designed to interact with multiple Google Cloud services as specialized tools. This project provides a framework that can leverage various Google Cloud capabilities to answer complex queries, process documents, and retrieve information from diverse sources.
 
