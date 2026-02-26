@@ -309,17 +309,21 @@ class agent:
 
     def _get_session_summary(self, firestore: FireStoreChat, session_id: str = None) -> str:
         """ Retrieve all previous sessions for this user and summarise each into a single output"""
-        data = firestore.load_all_messages(current_session_id=session_id)
-        if not data:
-            return ""
-        
-        out = self.llm.invoke(f"You are a helpful assistant that summarises conversations briefly, incorporating all important information from the conversation. Focus on key topics discussed, important user preferences, and any ongoing context. Summarise the following: {data}")
-        if(hasattr(out, 'content')):
-            summary = out.content
-        else:
-            summary = str(out)
+        try:
+            data = firestore.load_all_messages(current_session_id=session_id)
+            if not data:
+                return ""
+            
+            out = self.llm.invoke(f"You are a helpful assistant that summarises conversations briefly, incorporating all important information from the conversation. Focus on key topics discussed, important user preferences, and any ongoing context. Summarise the following: {data}")
+            if(hasattr(out, 'content')):
+                summary = out.content
+            else:
+                summary = str(out)
 
-        return summary
+            return summary
+        except Exception as e:
+            print(f"Error getting session summary: {e}")
+            return ""
     
     def invoke_res(self, query: str, user_id: str = None, session_id: str = None):
         max_retries = 2

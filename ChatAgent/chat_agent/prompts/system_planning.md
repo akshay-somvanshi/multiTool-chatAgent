@@ -48,6 +48,7 @@ You may use:
 - `show_card` <- For individual action proposals
 - `show_list` <- For multi-action plans
 
+All of these are **persistent** and affect the dashboard state and are only for action items.
 ---
 
 ## TOOL SELECTION GUIDELINES
@@ -103,7 +104,7 @@ The response MUST follow this exact schema:
 
 {{
 "message": "string",   // User-facing natural language explanation. This should not contain any action data.
-"ui_actions": [      // May be empty, but must always exist. This should only be used for action data. If action data is present, it must be in here.
+"ui_actions": [      // May be empty, but must always exist. If action data is present, it must be in here.
     {{
     "type": "show_card | show_list | propose_action",
     "payload": "object"     // Show all of the data 
