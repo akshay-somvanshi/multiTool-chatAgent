@@ -1,17 +1,19 @@
 # multiTool-chatAgent
 
+Latest developments: [<image-card alt="dev branch" src="https://img.shields.io/badge/branch-dev-blue" ></image-card>](https://github.com/akshay-somvanshi/multiTool-chatAgent/tree/dev)
+
 A conversational AI agent built with Langchain and Google Vertex AI, designed to interact with multiple Google Cloud services as specialized tools. This project provides a framework that can leverage various Google Cloud capabilities to answer complex queries, process documents, and retrieve information from diverse sources.
 
 ## Features
 
-*   **Conversational AI Core:** Powered by Google Vertex AI's Generative AI models (e.g., Gemini), enabling natural and dynamic interactions.
-*   **Dynamic Model Selection:** Optimizes performance and cost by dynamically switching between basic and advanced Gemini models based on conversation complexity.
-*   **Google Search Integration:** Performs real-time web searches using the Google Search API to fetch up-to-date information.
-*   **Vertex AI Search (Discovery Engine) Integration:** Queries internal data stores and knowledge bases configured within Google Cloud's Discovery Engine for tailored information retrieval.
-*   **Document AI Integration:** Extracts structured and unstructured text content from PDF documents, enabling intelligent processing of reports, invoices, and other document types.
-*   **Chat History & Context Management:** Utilizes Google Firestore to persist chat history and manage user-specific context across sessions.
-*   **FastAPI Web Interface:** Provides a lightweight and high-performance web application built with FastAPI, making it easy to expose the agent via an API.
-*   **Docker Support:** Containerized with Docker for consistent deployment across different environments.
+*   **Conversational AI Core:** Powered by Google Vertex AI's Generative AI models (Gemini 3.1 Flash & 3.1 Pro), enabling fluid and dynamic interactions.
+*   **Real-Time Status Updates:** Provides context-aware feedback via a Firestore side-channel, keeping users engaged while the agent "thinks."
+*   **Intelligent Intent Classification:** Automatically routes queries to specialized planning, action, or generalist agents.
+*   **Dynamic Model Selection:** Optimizes performance by switching between Flash and Pro models based on conversation complexity.
+*   **Background Intelligence:** Generates tailored follow-up suggestions asynchronously to predict user needs without performance hits.
+*   **Google Search & Vertex AI Search Integration:** Combines real-time web data with internal knowledge base retrieval.
+*   **Document AI Integration:** Seamlessly processes PDF documents to extract and analyze structured data.
+*   **Persistent Context:** Uses Firestore for long-term memory, session management, and cross-session summaries.
 
 ## Getting Started
 
