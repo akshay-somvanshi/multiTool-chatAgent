@@ -9,12 +9,12 @@ db = firestore.Client()
 class FireStoreChat():  
     def __init__(self, user_id, session_id):
         "We would like the structure: messages/{user_id}/{session_id}/message"
-        self.ref = (db.collection("messages")
+        self.session_doc_ref = (db.collection("messages")
                     .document(user_id)
                     .collection("sessions")
                     .document(session_id)
-                    .collection("messages")
         )
+        self.ref = self.session_doc_ref.collection("messages")
 
         self.user_ref = (db.collection("users")
                          .document(user_id)
@@ -141,7 +141,63 @@ class FireStoreChat():
             f"Their user_id is {self.user_id}" 
         ) 
         
+
         print(f"[Profiling] User Context took {time.perf_counter() - start_time:.2f}s")
 
         return context
+
+    def set_status(self, status_key):
+        """Update the session document with a witty status message."""
+        status_map = {
+            "classifier": [
+                "Deciding how to tackle this...",
+                "Selecting the right intelligence mode...",
+                "Analyzing your request...",
+                "Consulting the internal logic map..."
+            ],
+            "history": [
+                "Recalling our last conversation...",
+                "Looking through our chat history...",
+                "Remembering context...",
+                "Getting up to speed on where we left off..."
+            ],
+            "summary": [
+                "Summarizing previous insights...",
+                "Synthesizing your past feedback...",
+                "Distilling the key points of our journey...",
+                "Connecting the dots across sessions..."
+            ],
+            "search": [
+                "Consulting the digital experts...",
+                "Searching the web for the freshest facts...",
+                "Scanning the hive mind (Google)...",
+                "Deep-diving into online resources..."
+            ],
+            "agent_thinking": [
+                "Formulating the perfect reply...",
+                "Crunching the numbers...",
+                "Applying some serious processing power...",
+                "Thinking through the implications..."
+            ],
+            "finishing": [
+                "Polishing the response...",
+                "Almost there...",
+                "Wrapping up the insights...",
+                "Finalizing the details..."
+            ]
+        }
+
+        import random
+        messages = status_map.get(status_key, ["Processing..."])
+        message = random.choice(messages)
+        
+        try:
+            self.session_doc_ref.set({
+                "status": message,
+                "status_key": status_key,
+                "last_status_update": firestore.SERVER_TIMESTAMP
+            }, merge=True)
+            print(f"[Firestore] Status updated to: {message}")
+        except Exception as e:
+            print(f"Error updating status: {e}")
         

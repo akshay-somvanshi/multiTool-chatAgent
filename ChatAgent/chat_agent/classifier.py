@@ -3,6 +3,8 @@ import time
 
 from chat_agent.tools import ToolList, search_query
 from chat_agent.agent import agent
+from chat_agent.firestore import FireStoreChat
+from datetime import datetime
 
 project_id = 'dash-beta-e61d0'
 location = 'europe-west1'
@@ -23,8 +25,20 @@ class classifier():
         self.planning = agent(self.model, system_instruction_plan, self.tool.get_tools(), search_query)
         self.action = agent(self.model, system_instruction_act, self.tool.get_tools(), search_query)
 
+    def _get_daily_session_id(self, user_id: str) -> str:
+        """Create one session per day"""
+        today = datetime.now().strftime('%Y%m%d')
+        return f"{today}"
+
     async def ainvoke(self, query, user_id=None):
         start = time.perf_counter()
+        
+        # Set status
+        if user_id:
+            session_id = self._get_daily_session_id(user_id)
+            firestore = FireStoreChat(user_id, session_id)
+            firestore.set_status("classifier")
+
         prompt = f"""
         You are a classifier that decides which operational mode to use.
 

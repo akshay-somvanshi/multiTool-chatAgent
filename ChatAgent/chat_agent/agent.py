@@ -216,6 +216,9 @@ class agent:
 
         # Initialize Firestore for the current user and session
         firestore = self._init_FireStore(user_id, session_id)
+        
+        # Set status: Loading history
+        firestore.set_status("history")
 
         # Check if this is the first message in the session to inject context
         step_start = time.perf_counter()
@@ -225,6 +228,10 @@ class agent:
 
         if is_new_session:
             print("New session detected. Injecting user context and session summary.")
+            
+            # Set status: Summarizing
+            firestore.set_status("summary")
+
             step_start = time.perf_counter()
             # Run user context fetch and summary generation concurrently
             user_context_task = asyncio.to_thread(firestore.get_user_context)
@@ -257,6 +264,9 @@ class agent:
         recent_messages = [{"role": msg.type, "content": msg.content} for msg in current_session_history[-self.max_messages:]]
         print(f"[Profiling] Reloading history took {time.perf_counter() - step_start:.2f}s")
         
+        # Set status: Agent Thinking
+        firestore.set_status("agent_thinking")
+
         # Extract text response
         response_content = None
         for attempt in range(max_retries):
@@ -279,6 +289,9 @@ class agent:
                 if attempt == max_retries-1:
                     response_content = {"message": "I could not generate a response. Please try again", "ui_actions": []}
         
+        # Set status: Finishing
+        firestore.set_status("finishing")
+
         # Store as plain text in Firestore if response is non empty to avoid InvalidArg error
         if response_content:
             # 1. Decide what to store in Firestore history
