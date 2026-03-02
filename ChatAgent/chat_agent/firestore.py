@@ -23,25 +23,34 @@ class FireStoreChat():
         self.user_id = user_id
 
     def add_user_message(self, content):
-        self.ref.add({
-            "role": "user",
-            "content": content,
-            "timestamp": firestore.SERVER_TIMESTAMP
-        })
+        try:
+            self.ref.add({
+                "role": "user",
+                "content": content,
+                "timestamp": firestore.SERVER_TIMESTAMP
+            })
+        except Exception as e:
+            print(f"Error adding user message: {e}")
 
     def add_system_message(self, content):
-        self.ref.add({
-            "role": "system",
-            "content": content,
-            "timestamp": firestore.SERVER_TIMESTAMP
-        })
+        try:
+            self.ref.add({
+                "role": "system",
+                "content": content,
+                "timestamp": firestore.SERVER_TIMESTAMP
+            })
+        except Exception as e:
+            print(f"Error adding system message: {e}")
 
     def add_ai_message(self, content):
-        self.ref.add({
-            "role": "ai",
-            "content": content,
-            "timestamp": firestore.SERVER_TIMESTAMP
-        })
+        try:
+            self.ref.add({
+                "role": "ai",
+                "content": content,
+                "timestamp": firestore.SERVER_TIMESTAMP
+            })
+        except Exception as e:
+            print(f"Error adding AI message: {e}")
 
     def load_messages(self):
         try:

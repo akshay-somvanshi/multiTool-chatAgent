@@ -218,7 +218,7 @@ class agent:
         firestore = self._init_FireStore(user_id, session_id)
         
         # Set status: Loading history
-        firestore.set_status("history")
+        await asyncio.to_thread(firestore.set_status, "history")
 
         # Check if this is the first message in the session to inject context
         step_start = time.perf_counter()
@@ -230,7 +230,7 @@ class agent:
             print("New session detected. Injecting user context and session summary.")
             
             # Set status: Summarizing
-            firestore.set_status("summary")
+            await asyncio.to_thread(firestore.set_status, "summary")
 
             step_start = time.perf_counter()
             # Run user context fetch and summary generation concurrently
@@ -265,7 +265,7 @@ class agent:
         print(f"[Profiling] Reloading history took {time.perf_counter() - step_start:.2f}s")
         
         # Set status: Agent Thinking
-        firestore.set_status("agent_thinking")
+        await asyncio.to_thread(firestore.set_status, "agent_thinking")
 
         # Extract text response
         response_content = None
@@ -290,7 +290,7 @@ class agent:
                     response_content = {"message": "I could not generate a response. Please try again", "ui_actions": []}
         
         # Set status: Finishing
-        firestore.set_status("finishing")
+        await asyncio.to_thread(firestore.set_status, "finishing")
 
         # Store as plain text in Firestore if response is non empty to avoid InvalidArg error
         if response_content:
@@ -303,6 +303,8 @@ class agent:
             else:
                 # Fallback if it somehow returned a string
                 asyncio.create_task(asyncio.to_thread(firestore.add_ai_message, str(response_content)))
+        else:
+            print("Response content is empty, skipping Firestore write")
         
         print(f"[Profiling] TOTAL ainvoke_res took {time.perf_counter() - total_start:.2f}s")
         return response_content
