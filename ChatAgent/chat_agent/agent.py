@@ -33,7 +33,7 @@ class agent:
         self.search_input = search_input
 
         # Set a limit on how many last messages we inject (limit short term memory)
-        self.max_messages = 20
+        self.max_messages = 5
 
         # Safety - content filter configuration
         self.safety_settings = {
@@ -261,7 +261,15 @@ class agent:
         # Load the complete history for this session, including the newly added context and query
         step_start = time.perf_counter()
         current_session_history = await asyncio.to_thread(firestore.load_messages)
-        recent_messages = [{"role": msg.type, "content": msg.content} for msg in current_session_history[-self.max_messages:]]
+
+        # Seperate the messages such that the user context and summary is always injected 
+        # and only the last `max_messages` are taken from the rest of the messages
+        system_messages = [msg for msg in current_session_history if msg.type == 'system']
+        other_messages = [msg for msg in current_session_history if msg.type != 'system']
+        recent_messages = [{"role": msg.type, "content": msg.content} for msg in system_messages] + \
+                        [{"role": msg.type, "content": msg.content} for msg in other_messages[-self.max_messages:]]
+
+        # recent_messages = [{"role": msg.type, "content": msg.content} for msg in current_session_history[-self.max_messages:]]
         print(f"[Profiling] Reloading history took {time.perf_counter() - step_start:.2f}s")
         
         # Set status: Agent Thinking
