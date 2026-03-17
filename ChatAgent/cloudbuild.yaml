@@ -20,6 +20,6 @@ steps:
         "--allow-unauthenticated",
         "--set-secrets", "GOOGLE_API_KEY=google-api-key:latest,GOOGLE_CSE_ID=google-cse-id:latest",
         "--timeout", "600",
-        "--memory", "4Gi",
-        "--cpu", "4",
+        "--memory", "32Gi",
+        "--cpu", "8",
       ]
