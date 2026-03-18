@@ -1,5 +1,7 @@
 from google.cloud import bigquery, documentai_v1, storage
 from google import genai
+from google.cloud import discoveryengine
+from google.api_core.client_options import ClientOptions
 from google.genai.types import HttpOptions, GenerateContentConfig
 import uuid
 import json
@@ -20,6 +22,11 @@ FILE_PATH_PREFIX = 'gs://dash-beta-e61d0.firebasestorage.app/'
 # Vertex AI Configuration
 LOCATION = 'global'
 GEMINI_MODEL_ID = 'gemini-3-flash-preview'
+
+# Vertex AI Search (Data Store) Configuration
+DATA_STORE_LOCATION = 'eu'
+DATA_STORE_ID = 'unstructureddatastore_1773747191489'
+# COLLECTION_ID = 'default_collection'
 
 class InsertException(Exception):
     def __init__(self, message):
@@ -147,23 +154,49 @@ def process_document(blob):
             raise InsertException(errors)
         else:
             print("Finished ingesting document")
-        # update_query = f"""
-        #     UPDATE {PROJECT_ID}.{DATASET_ID}.{TABLE_NAME} 
-        #     SET parsed_data= @parsed_data
-        #     WHERE document_id= @document_id"""
-        
-        # update_job = bq_client.query(
-        #     update_query, 
-        #     job_config=bigquery.QueryJobConfig(
-        #         query_parameters=[
-        #             bigquery.ScalarQueryParameter("parsed_data", "JSON", parsed_data),
-        #             bigquery.ScalarQueryParameter("document_id", "STRING", document_id)
-        #         ]
-        #     ),
-        # ).result()
         
     except Exception as e:
         print(f"Failed to update table in BigQuery: {e}")
+
+def trigger_data_store_sync():
+    """Trigger a manual import from BigQuery to the Vertex AI Search Data Store."""
+    print("Triggering Vertex AI Search sync...")
+    try:
+        client_options = (
+            ClientOptions(api_endpoint=f"{DATA_STORE_LOCATION}-discoveryengine.googleapis.com")
+            if DATA_STORE_LOCATION != "global"
+            else None
+        )
+
+        client = discoveryengine.DocumentServiceClient(client_options=client_options)
+        
+        # The path of the parent resource: Data Store
+        parent = client.branch_path(
+            project=PROJECT_ID,
+            location=DATA_STORE_LOCATION,
+            data_store=DATA_STORE_ID,
+            branch="default_branch"
+        )
+
+        request = discoveryengine.ImportDocumentsRequest(
+            parent=parent,
+            bigquery_source=discoveryengine.BigQuerySource(
+                project_id=PROJECT_ID,
+                dataset_id=DATASET_ID,
+                table_id="RAG_unstructured", # View name in BigQuery
+                data_schema="document",
+            ),
+            # This ensures it doesn't create duplicates and updates existing docs
+            reconciliation_mode=discoveryengine.ImportDocumentsRequest.ReconciliationMode.INCREMENTAL,
+        )
+
+        operation = client.import_documents(request=request)
+        print(f"Sync started. Operation name: {operation.operation.name}")
+        # We don't wait for completion here to keep the function fast
+        return operation
+    except Exception as e:
+        print(f"Failed to trigger Vertex AI Search sync: {e}")
+        return None
 
 def run_pipeline(event, context=None):
     # Get existing documents to avoid duplicates
@@ -187,4 +220,11 @@ def run_pipeline(event, context=None):
         except Exception as e:
             print(f"Failed to process {blob.name}: {e}")
     
+    # Trigger sync after all documents are processed
+    trigger_data_store_sync()
+    
     return "Done"
+
+if __name__ == "__main__":
+    run_pipeline(None, None)    
+    # trigger_data_store_sync()
