@@ -60,77 +60,93 @@ def clean_llm_output(s: str) -> str:
     return json.dumps(parsed) # canonical string
 
 def process_document(blob):
-    """Pipeline for a single document: OCR -> AI Extraction -> BigQuery."""
+    """Pipeline for a document: OCR -> AI Extraction -> BigQuery.
+    Skips OCR/LLM if it's a pre-processed .txt file (e.g. from Octopus)."""
     url = blob.name
     print(f"Processing: {url}")
 
-    response = None
+    raw_text = ""
+    parsed_data = {}
 
-    # 1. OCR with Document AI
-    try: 
-        processor_name = docai_client.processor_path(PROJECT_ID, DOCAI_LOCATION, PROCESSOR_ID)
-        gcs_uri = f"gs://{BUCKET_NAME}/{blob.name}"
-        
-        docai_request = documentai_v1.ProcessRequest(
-            name=processor_name,
-            gcs_document=documentai_v1.GcsDocument(
-                gcs_uri=gcs_uri,
-                mime_type="application/pdf"
+    # Check if it's an API-generated virtual document (.txt with metadata)
+    if url.endswith(".txt") and blob.metadata and "document_type" in blob.metadata:
+        print(f"Detected virtual document: {url}")
+        raw_text = blob.download_as_text()
+        parsed_data = {
+            "document_type": blob.metadata.get("document_type"),
+            "company_name": blob.metadata.get("provider") or blob.metadata.get("company_name"),
+            "consumption_kwh": float(blob.metadata.get("consumption_kwh", 0)),
+            "period_start": blob.metadata.get("period_start"),
+            "period_end": blob.metadata.get("period_end"),
+            "meter_serial": blob.metadata.get("meter_serial")
+        }
+    elif url.endswith(".pdf"):
+        # 1. OCR with Document AI
+        try: 
+            processor_name = docai_client.processor_path(PROJECT_ID, DOCAI_LOCATION, PROCESSOR_ID)
+            gcs_uri = f"gs://{BUCKET_NAME}/{blob.name}"
+            
+            docai_request = documentai_v1.ProcessRequest(
+                name=processor_name,
+                gcs_document=documentai_v1.GcsDocument(
+                    gcs_uri=gcs_uri,
+                    mime_type="application/pdf"
+                )
             )
-        )
-        
-        # Increase timeout to 1200.0s, and read directly from GCS 
-        # to avoid large file downloading SSL dropout 
-        docai_result = docai_client.process_document(request=docai_request, timeout=1200.0)
-        raw_text = docai_result.document.text
+            
+            docai_result = docai_client.process_document(request=docai_request, timeout=1200.0)
+            raw_text = docai_result.document.text
 
-    except Exception as e:
-        print(f"Error extracting raw text using DocumentAI: {e}")
-
-    # 2. Universal Extraction with Gemini
-    try:
-        prompt = f"""
-        You are a professional data extraction assistant. Analyze the following OCR text from a document and extract key information into a structured JSON format.
-        
-        Identify the document type (e.g., utility bill, invoice, receipt, report, etc.) and extract as many relevant fields as possible.
-        
-        Required Fields (if applicable):
-        - document_type
-        - company_name
-        - industry
-        - region
-        - billing_start_date (YYYY-MM-DD or standard ISO)
-        - billing_end_date (YYYY-MM-DD or standard ISO)
-        - billing_year (integer)
-        - billing_month (integer, 1-12)
-        - consumption_kwh (float)
-        - total_amount (float)
-        - currency (string, e.g., EUR, USD)
-        
-        OCR Text:
-        {raw_text}
-        
-        Return ONLY a valid JSON object.
-        """
-
-        response = gemini_client.models.generate_content(
-            model=GEMINI_MODEL_ID,
-            contents=prompt,
-            config=GenerateContentConfig(
-                response_mime_type="application/json"
-            )
-        )
-    except Exception as e:
-        print(f"Gemini failed to parse raw data: {e}")
-
-    if response is not None:
-        try:
-            cleaned_json = clean_llm_output(response.text)
-            # Make it a dict to extract document type 
-            parsed_data = json.loads(cleaned_json)
         except Exception as e:
-            print(f"Error parsing Gemini response into Json: {e}")
-            parsed_data = {"error": "Failed to parse LLM output", "raw_response": response.text}
+            print(f"Error extracting raw text using DocumentAI: {e}")
+
+        # 2. Universal Extraction with Gemini
+        response = None
+        try:
+            prompt = f"""
+            You are a professional data extraction assistant. Analyze the following OCR text from a document and extract key information into a structured JSON format.
+            
+            Identify the document type (e.g., utility bill, invoice, receipt, report, etc.) and extract as many relevant fields as possible.
+            
+            Required Fields (if applicable):
+            - document_type
+            - company_name
+            - industry
+            - region
+            - billing_start_date (YYYY-MM-DD or standard ISO)
+            - billing_end_date (YYYY-MM-DD or standard ISO)
+            - billing_year (integer)
+            - billing_month (integer, 1-12)
+            - consumption_kwh (float)
+            - total_amount (float)
+            - currency (string, e.g., EUR, USD)
+            
+            OCR Text:
+            {raw_text}
+            
+            Return ONLY a valid JSON object.
+            """
+
+            response = gemini_client.models.generate_content(
+                model=GEMINI_MODEL_ID,
+                contents=prompt,
+                config=GenerateContentConfig(
+                    response_mime_type="application/json"
+                )
+            )
+        except Exception as e:
+            print(f"Gemini failed to parse raw data: {e}")
+
+        if response is not None:
+            try:
+                cleaned_json = clean_llm_output(response.text)
+                parsed_data = json.loads(cleaned_json)
+            except Exception as e:
+                print(f"Error parsing Gemini response into Json: {e}")
+                parsed_data = {"error": "Failed to parse LLM output", "raw_response": response.text}
+    else:
+        print(f"Unsupported file type: {url}")
+        return
 
     # 3. Store in BigQuery
     try:
@@ -207,7 +223,8 @@ def run_pipeline(event, context=None):
     blobs = bucket.list_blobs()
 
     for blob in blobs:
-        if not blob.name.endswith(".pdf"):
+        # Allow PDF and Octopus Virtual Documents (txt)
+        if not (blob.name.endswith(".pdf") or blob.name.endswith(".txt")):
             continue
             
         full_url = FILE_PATH_PREFIX + blob.name
