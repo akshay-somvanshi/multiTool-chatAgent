@@ -14,6 +14,8 @@ from datetime import datetime
 
 from chat_agent.api_client import api_client
 from chat_agent.core.exceptions import APIError
+from chat_agent.core.octopus import OctopusClient
+from chat_agent.firestore import FireStoreChat
 
 dotenv.load_dotenv()
 
@@ -44,6 +46,10 @@ class get_api(BaseModel):
     user_id: str = Field(
         description="User id whos actions are fetched from the database"
     )
+
+class EnergyFetchInput(BaseModel):
+    user_id: str = Field(description="The user ID")
+    days_back: int = Field(default=7, description="Number of days to fetch consumption for")
 
 class AddActionInput(BaseModel):
     user_id: str = Field(description="User ID")
@@ -478,6 +484,35 @@ class ToolList:
                 
         return formatted
 
+    def fetch_octopus_usage(self, user_id: str, days_back: int = 7):
+        """Fetches the last N days of electricity usage for a user from Octopus Energy."""
+        try:
+            # 1. Fetch energy settings from Firestore
+            session_id = f"{datetime.now().strftime('%Y%m%d')}"
+            firestore = FireStoreChat(user_id, session_id) 
+            settings = firestore.get_user_energy_context()
+    
+            if not settings:
+                return f"No energy settings (MPAN/Serial) found for user {user_id} in Firestore."
+            
+            mpan = settings.get("mpan")
+            serial = settings.get("serial")
+            secret_name = settings.get("octopus_secret_name")
+            
+            if not all([mpan, serial, secret_name]):
+                return f"Incomplete energy settings found for user {user_id}. Need mpan, serial, and secret_name."
+
+            # 2. Fetch from API
+            client = OctopusClient(self.project_id)
+            energy_data = client.get_summarized_usage(user_id, mpan, serial, secret_name, days_back)
+
+            if not energy_data:
+                return "No consumption data found for the specified period."
+            
+            return energy_data.model_dump()
+        except Exception as e:
+            return f"Error fetching from Octopus API: {str(e)}"
+
     def get_tools(self) -> list[Tool]:
         google_search_tool = Tool(
             name="google_search",  # The name the LLM calls
@@ -537,7 +572,17 @@ class ToolList:
             func=self.vertex_search
         )
         
-        tools_list = [google_search_tool, document_read_tool, read_actions_tool, add_action_tool, remove_action_tool, update_action_tool, vertex_search_tool]
+        octopus_fetch_tool = StructuredTool(
+            name="fetch_octopus_usage",
+            description="""
+            Fetch LIVE energy consumption data directly from Octopus Energy API. 
+            Use this if the user asks for energy data that isnt available in the database or very recent data (e.g. today or yesterday) or specifically asks for a fresh catch.
+            """,
+            args_schema=EnergyFetchInput,
+            func=self.fetch_octopus_usage
+        )
+
+        tools_list = [google_search_tool, document_read_tool, read_actions_tool, add_action_tool, remove_action_tool, update_action_tool, vertex_search_tool, octopus_fetch_tool]
 
         return tools_list
 
