@@ -17,21 +17,28 @@ class OctopusClient:
         response = client.access_secret_version(request={"name": name})
         return response.payload.data.decode("UTF-8")
 
-    def fetch_consumption(self, api_key: str, mpan: str, serial: str, days_back: int = 7):
+    def fetch_consumption(self, api_key: str, mpan: str, serial: str, days_back: int = 7, period_from: str = None, period_to: str = None):
         """Fetch consumption results from Octopus."""
-        period_from = (datetime.now() - timedelta(days=days_back)).strftime("%Y-%m-%dT00:00:00Z")
-        url = f"{self.api_base}/electricity-meter-points/{mpan}/meters/{serial}/consumption/"
-        # We use standard params to avoid fetching too much data in a live tool call
-        params = {"period_from": period_from, "order_by": "period"}
-        
-        response = requests.get(url, auth=(api_key, ""), params=params)
-        response.raise_for_status()
-        return response.json().get("results", [])
+        try:
+            if not period_from:
+                period_from = (datetime.now() - timedelta(days=days_back)).strftime("%Y-%m-%dT00:00:00Z")
+            
+            url = f"{self.api_base}/electricity-meter-points/{mpan}/meters/{serial}/consumption/"
+            params = {"period_from": period_from,} #"order_by": "period"}
+            if period_to:
+                params["period_to"] = period_to
+                
+            response = requests.get(url, auth=(api_key, ""), params=params)
+            response.raise_for_status()
+            return response.json().get("results", [])
+        except Exception as e:
+            print("Error fetching consumption", e)
+            return None 
 
-    def get_summarized_usage(self, user_id: str, mpan: str, serial: str, secret_name: str, days_back: int = 7) -> EnergyConsumption:
+    def get_summarized_usage(self, user_id: str, mpan: str, serial: str, secret_name: str, days_back: int = 7, period_from: str = None, period_to: str = None) -> EnergyConsumption:
         """Fetch and aggregate consumption into a standard model."""
         api_key = self.get_secret(secret_name)
-        results = self.fetch_consumption(api_key, mpan, serial, days_back)
+        results = self.fetch_consumption(api_key, mpan, serial, days_back, period_from, period_to)
         
         if not results:
             return None

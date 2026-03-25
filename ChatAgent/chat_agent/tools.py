@@ -49,7 +49,9 @@ class get_api(BaseModel):
 
 class EnergyFetchInput(BaseModel):
     user_id: str = Field(description="The user ID")
-    days_back: int = Field(default=7, description="Number of days to fetch consumption for")
+    days_back: int = Field(default=7, description="Number of days to fetch consumption for (used if period_from is not set)")
+    period_from: str | None = Field(default=None, description="Start of the period in ISO format (e.g. 2026-01-01T00:00:00Z)")
+    period_to: str | None = Field(default=None, description="End of the period in ISO format (e.g. 2026-02-01T00:00:00Z)")
 
 class AddActionInput(BaseModel):
     user_id: str = Field(description="User ID")
@@ -484,14 +486,15 @@ class ToolList:
                 
         return formatted
 
-    def fetch_octopus_usage(self, user_id: str, days_back: int = 7):
-        """Fetches the last N days of electricity usage for a user from Octopus Energy."""
+    def fetch_octopus_usage(self, user_id: str, days_back: int = 7, period_from: str = None, period_to: str = None):
+        """Fetches electricity usage for a user from Octopus Energy. Supports specific date ranges."""
         try:
+            print(f"Fetching energy data from Octopus for user: {user_id}, range: {period_from} to {period_to}")
             # 1. Fetch energy settings from Firestore
             session_id = f"{datetime.now().strftime('%Y%m%d')}"
             firestore = FireStoreChat(user_id, session_id) 
             settings = firestore.get_user_energy_context()
-    
+            
             if not settings:
                 return f"No energy settings (MPAN/Serial) found for user {user_id} in Firestore."
             
@@ -504,14 +507,14 @@ class ToolList:
 
             # 2. Fetch from API
             client = OctopusClient(self.project_id)
-            energy_data = client.get_summarized_usage(user_id, mpan, serial, secret_name, days_back)
-
+            energy_data = client.get_summarized_usage(user_id, mpan, serial, secret_name, days_back, period_from, period_to)
+            
             if not energy_data:
                 return "No consumption data found for the specified period."
             
             return energy_data.model_dump()
         except Exception as e:
-            return f"Error fetching from Octopus API: {str(e)}"
+            return f"Error fetching from Octopus: {str(e)}"
 
     def get_tools(self) -> list[Tool]:
         google_search_tool = Tool(
