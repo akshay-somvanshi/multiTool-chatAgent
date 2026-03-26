@@ -152,7 +152,7 @@ def process_document(blob):
     try:
         document_id = str(uuid.uuid4())
         full_gs_url = FILE_PATH_PREFIX + url
-        user_id = url.split("/")[1] if "/" in url else "unknown"
+        user_id = blob.metadata.get("user_id") or (url.split("/")[1] if "/" in url else "unknown")
 
         row_to_insert = [{
             "document_id": document_id,

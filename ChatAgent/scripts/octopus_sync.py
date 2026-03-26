@@ -16,7 +16,7 @@ def upload_to_gcs(energy_data: EnergyConsumption):
     bucket = storage_client.bucket(BUCKET_NAME)
     
     date_str = energy_data.period_start[:10]
-    blob_path = f"api_data/octopus/{energy_data.user_id}/{date_str}.txt"
+    blob_path = f"users/{energy_data.user_id}/api_data/octopus/{date_str}.txt"
     blob = bucket.blob(blob_path)
     
     blob.metadata = energy_data.to_metadata()
