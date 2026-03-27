@@ -24,10 +24,12 @@ class OctopusClient:
                 period_from = (datetime.now() - timedelta(days=days_back)).strftime("%Y-%m-%dT00:00:00Z")
             
             url = f"{self.api_base}/electricity-meter-points/{mpan}/meters/{serial}/consumption/"
-            params = {"period_from": period_from,} #"order_by": "period"}
+            params = {"period_from": period_from, "order_by": "period"}
             if period_to:
                 params["period_to"] = period_to
-                
+            else:
+                params["page_size"] = 1000 # Default is limited to 100 records and 7 days of record will exceed that
+            
             response = requests.get(url, auth=(api_key, ""), params=params)
             response.raise_for_status()
             return response.json().get("results", [])
@@ -39,7 +41,6 @@ class OctopusClient:
         """Fetch and aggregate consumption into a standard model."""
         api_key = self.get_secret(secret_name)
         results = self.fetch_consumption(api_key, mpan, serial, days_back, period_from, period_to)
-        
         if not results:
             return None
 
