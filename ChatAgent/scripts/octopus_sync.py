@@ -16,7 +16,9 @@ def upload_to_gcs(energy_data: EnergyConsumption):
     bucket = storage_client.bucket(BUCKET_NAME)
     
     date_str = energy_data.period_start[:10]
-    blob_path = f"users/{energy_data.user_id}/api_data/octopus/{date_str}.txt"
+    mpan = energy_data.mpan
+
+    blob_path = f"users/{energy_data.user_id}/api_data/octopus/{mpan}_{date_str}.txt"
     blob = bucket.blob(blob_path)
     
     blob.metadata = energy_data.to_metadata()
@@ -25,9 +27,11 @@ def upload_to_gcs(energy_data: EnergyConsumption):
         f"Daily Electricity Consumption Summary for {date_str}.\n"
         f"Provider: {energy_data.provider}\n"
         f"Total Consumption: {energy_data.consumption_kwh:.3f} kWh\n"
-        f"Period: {energy_data.period_start} to {energy_data.period_end}"
+        f"Period: {energy_data.period_start} to {energy_data.period_end}\n"
+        f"MPAN: {mpan}\n"
+        f"Meter Serial: {energy_data.meter_serial}\n"
     )
-    
+
     blob.upload_from_string(summary_text, content_type="text/plain")
     return f"gs://{BUCKET_NAME}/{blob_path}"
 

@@ -10,6 +10,7 @@ class EnergyConsumption(BaseModel):
     period_end: str   # ISO format
     meter_serial: str
     document_type: str = "api_consumption"
+    mpan: str
 
     def to_metadata(self):
         """Convert to the flat dictionary format used for GCS blob metadata."""
@@ -19,5 +20,6 @@ class EnergyConsumption(BaseModel):
             "consumption_kwh": str(self.consumption_kwh),
             "period_start": self.period_start,
             "period_end": self.period_end,
-            "document_type": self.document_type
+            "document_type": self.document_type,
+            "mpan": self.mpan
         }

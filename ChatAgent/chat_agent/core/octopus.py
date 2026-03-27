@@ -52,5 +52,6 @@ class OctopusClient:
             consumption_kwh=total_kwh,
             period_start=results[0]['interval_start'],
             period_end=results[-1]['interval_end'],
-            meter_serial=serial
+            meter_serial=serial,
+            mpan=mpan
         )
