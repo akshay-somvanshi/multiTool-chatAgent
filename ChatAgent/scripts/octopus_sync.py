@@ -17,8 +17,9 @@ def upload_to_gcs(energy_data: EnergyConsumption):
     
     date_str = energy_data.period_start[:10]
     mpan = energy_data.mpan
+    serial = energy_data.meter_serial
 
-    blob_path = f"users/{energy_data.user_id}/api_data/octopus/{mpan}_{date_str}.txt"
+    blob_path = f"users/{energy_data.user_id}/api_data/octopus/{mpan}_{serial}_{date_str}.txt"
     blob = bucket.blob(blob_path)
     
     blob.metadata = energy_data.to_metadata()
@@ -37,24 +38,29 @@ def upload_to_gcs(energy_data: EnergyConsumption):
 
 def sync_user(user_id, settings):
     """Sync a single user's data."""
-    mpan = settings.get("mpan")
-    serial = settings.get("serial")
+    account_number = settings.get("octopus_account_num")
     secret_name = settings.get("octopus_secret_name")
 
-    if not all([mpan, serial, secret_name]):
+    if not all([account_number, secret_name]):
         print(f"Skipping user {user_id}: Incomplete settings.")
         return
 
     try:
         client = OctopusClient(PROJECT_ID)
-        energy_data = client.get_summarized_usage(user_id, mpan, serial, secret_name, days_back=7)
-        
-        if not energy_data:
-            print(f"No new data for user {user_id}.")
-            return
+        api_key = client.get_secret(secret_name)
+        account_data = client.get_account_details(account_number=account_number, api_key=api_key)
+        mpan_list = account_data["mpan_list"]
 
-        gcs_uri = upload_to_gcs(energy_data)
-        print(f"Synced {user_id} -> {gcs_uri}")
+        for mpan in mpan_list:
+            for serial in mpan_list[mpan]:
+                energy_data = client.get_summarized_usage(user_id, mpan, serial, secret_name, days_back=7)
+                
+                if not energy_data:
+                    print(f"No new data for user {user_id}.")
+                    continue
+
+                gcs_uri = upload_to_gcs(energy_data)
+                print(f"Synced {user_id} -> {gcs_uri}")
     except Exception as e:
         print(f"Error syncing user {user_id}: {e}")
 
@@ -68,8 +74,7 @@ def run_bulk_sync():
         user_id = user_doc.id
         data = user_doc.to_dict()
         
-        # Check if they have energy provider enabled (default to Octopus for now)
-        if data.get("octopus_secret_name") or data.get("mpan"):
+        if data.get("octopus_secret_name") or data.get("octopus_account_num"):
             sync_user(user_id, data)
 
 if __name__ == "__main__":

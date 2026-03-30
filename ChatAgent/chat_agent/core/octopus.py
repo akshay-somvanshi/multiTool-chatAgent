@@ -37,6 +37,33 @@ class OctopusClient:
             print("Error fetching consumption", e)
             return None 
 
+    def get_account_details(self, account_number: str, api_key: str):
+        try:
+            url = f"{self.api_base}/accounts/{account_number}/"
+            response = requests.get(url, auth=(api_key, ""))
+            response.raise_for_status()
+            data = response.json().get("properties", [])
+
+            mpan_list = {}
+            electricity_meters = data[0].get("electricity_meter_points", [])
+            start_date = data[0].get("moved_in_at", None)
+
+            # Get all the Mpan and their associated serial numbers in a dictionary
+            for elec_meter in electricity_meters:
+                mpan_list[elec_meter.get("mpan")] = []
+                for meter in elec_meter.get("meters", []):
+                    mpan_list[elec_meter.get("mpan")].append(meter.get("serial_number"))
+
+            account_data =  {
+                "start_date": start_date,
+                "mpan_list": mpan_list
+            }
+
+            return account_data
+        except Exception as e:
+            print("Error fetching account details", e)
+            return None
+
     def get_summarized_usage(self, user_id: str, mpan: str, serial: str, secret_name: str, days_back: int = 7, period_from: str = None, period_to: str = None) -> EnergyConsumption:
         """Fetch and aggregate consumption into a standard model."""
         api_key = self.get_secret(secret_name)
@@ -55,3 +82,6 @@ class OctopusClient:
             meter_serial=serial,
             mpan=mpan
         )
+
+# if __name__ == "__main__":
+#     client = OctopusClient("dash-beta-e61d0"

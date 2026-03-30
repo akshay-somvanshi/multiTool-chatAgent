@@ -170,8 +170,7 @@ class FireStoreChat():
             if doc.exists:
                 data = doc.to_dict()
                 return {
-                    "mpan": data.get("mpan"),
-                    "serial": data.get("serial"),
+                    "account_number": data.get("account_number"),
                     "octopus_secret_name": data.get("octopus_secret_name"),
                     "provider": data.get("energy_provider", "Octopus")
                 }
