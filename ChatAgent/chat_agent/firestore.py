@@ -164,13 +164,13 @@ class FireStoreChat():
             return ""
 
     def get_user_energy_context(self):
-        """Fetch energy settings (mpan, serial, secret_name) for a user."""
+        """Fetch energy settings (account number, secret_name) for a user."""
         try:
             doc = db.collection("users").document(self.user_id).get()
             if doc.exists:
                 data = doc.to_dict()
                 return {
-                    "account_number": data.get("account_number"),
+                    "account_number": data.get("octopus_account_num"),
                     "octopus_secret_name": data.get("octopus_secret_name"),
                     "provider": data.get("energy_provider", "Octopus")
                 }
