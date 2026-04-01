@@ -5,6 +5,7 @@ langchain-google-community
 google-cloud-core
 google-cloud-discoveryengine
 google-cloud-documentai
+google-cloud-secret-manager
 firebase_admin
 pydantic
 pydantic-core

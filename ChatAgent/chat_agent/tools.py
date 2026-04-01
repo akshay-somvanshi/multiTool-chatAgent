@@ -14,6 +14,8 @@ from datetime import datetime
 
 from chat_agent.api_client import api_client
 from chat_agent.core.exceptions import APIError
+from chat_agent.core.octopus import OctopusClient
+from chat_agent.firestore import FireStoreChat
 
 dotenv.load_dotenv()
 
@@ -44,6 +46,12 @@ class get_api(BaseModel):
     user_id: str = Field(
         description="User id whos actions are fetched from the database"
     )
+
+class EnergyFetchInput(BaseModel):
+    user_id: str = Field(description="The user ID")
+    days_back: int = Field(default=7, description="Number of days to fetch consumption for (used if period_from is not set)")
+    period_from: str | None = Field(default=None, description="Start of the period in ISO format (e.g. 2026-01-01T00:00:00Z)")
+    period_to: str | None = Field(default=None, description="End of the period in ISO format (e.g. 2026-02-01T00:00:00Z)")
 
 class AddActionInput(BaseModel):
     user_id: str = Field(description="User ID")
@@ -110,47 +118,68 @@ class ToolList:
         return result
 
     def _download_from_gcs(self, url):
-        """Download file from GCS using storage client (handles signed URLs better)."""
-        try:
-            # Parse the URL to extract bucket and blob path
-            # URL format: https://storage.googleapis.com/bucket-name/path/to/file
-            # or: https://bucket-name.storage.googleapis.com/path/to/file
-            
-            parsed = urlparse(url)
-            
-            # Extract bucket and path
-            if 'storage.googleapis.com' in parsed.netloc:
-                # Format: storage.googleapis.com/bucket/path or bucket.storage.googleapis.com/path
-                path_parts = parsed.path.lstrip('/').split('/', 1)
-                if len(path_parts) == 2:
-                    bucket_name, blob_path = path_parts
-                else:
-                    # Bucket in subdomain
-                    bucket_name = parsed.netloc.split('.')[0]
-                    blob_path = parsed.path.lstrip('/')
-            elif 'firebasestorage.app' in parsed.netloc:
-                # Firebase Storage format: bucket.firebasestorage.app/path
-                bucket_name = parsed.netloc.split('.')[0]
-                blob_path = parsed.path.lstrip('/')
-            else:
-                raise ValueError(f"Unsupported GCS URL format: {url}")
+        """
+        Download a file from Google Cloud Storage using the standard storage client.
+        
+        Supports multiple URL formats:
+        - Authenticated Console URLs (storage.cloud.google.com/bucket/blob)
+        - Public API URLs (storage.googleapis.com/bucket/blob)
+        - Subdomain API URLs (bucket.storage.googleapis.com/blob)
+        - Firebase Storage URLs (bucket.firebasestorage.app/blob)
+        - Native gs:// URI format (gs://bucket/blob)
 
-            print(f"Downloading from GCS bucket: {bucket_name}, path: {blob_path}", flush=True)
+        If the file has a .txt or .csv extension, it is returned as a UTF-8 string. 
+        Otherwise, it is returned as raw bytes.
+
+        Args:
+            url (str): The GCS URL or gs:// URI to download.
+
+        Returns:
+            Union[str, bytes]: File content as text (for .txt/.csv) or bytes (other formats).
+        """
+        try:
+            # Handle native gs:// format
+            if url.startswith("gs://"):
+                parts = url[5:].split('/', 1)
+                bucket_name = parts[0]
+                blob_path = parts[1] if len(parts) > 1 else ""
+            else:
+                parsed = urlparse(url)
+                netloc = parsed.netloc
+                path = parsed.path.lstrip('/')
+                
+                # Extract bucket and blob based on host
+                if 'storage.cloud.google.com' in netloc:
+                    bucket_name, blob_path = path.split('/', 1)
+                elif 'storage.googleapis.com' in netloc:
+                    if netloc == 'storage.googleapis.com':
+                        bucket_name, blob_path = path.split('/', 1)
+                    else:
+                        bucket_name = netloc.split('.')[0]
+                        blob_path = path
+                elif 'firebasestorage.app' in netloc:
+                    bucket_name = netloc.split('.')[0]
+                    blob_path = path
+                else:
+                    raise ValueError(f"Unsupported GCS URL format: {url}")
+
+            print(f"Downloading from GCS: bucket={bucket_name}, path={blob_path}", flush=True)
             
-            # Use storage client
             storage_client = storage.Client(project=self.project_id)
             bucket = storage_client.bucket(bucket_name)
             blob = bucket.blob(blob_path)
             
-            # Download as bytes
-            content = blob.download_as_bytes()
-            print(f"Downloaded {len(content)} bytes from GCS", flush=True)
+            # Simple text vs bytes logic
+            if blob_path.lower().endswith('.txt') or blob_path.lower().endswith('.csv'):
+                print(f"Downloading {blob_path} as text", flush=True)
+                content = blob.download_as_text()
+            else:
+                content = blob.download_as_bytes()
             
             return content
             
         except Exception as e:
-            print(f"GCS download failed: {e}, falling back to HTTP", flush=True)
-            # Fallback to HTTP download
+            print(f"GCS download failed: {e}. Falling back to HTTP.", flush=True)
             return self._download_from_http(url)
 
     def _download_from_http(self, url):
@@ -173,53 +202,40 @@ class ToolList:
         document_url
     ):
         """
-        Extracts full textual content from a PDF document using Google Document AI.
+        Reads and extracts text from a document (PDF, TXT, CSV).
+        
+        - If the document is a .txt or .csv it is read directly.
+        - If the document is a PDF, it is processed via Google Document AI OCR.
+        - Supports GCS URLs (authenticated, public, firebase) and HTTP links.
 
-        This method uses a pre-configured Document AI processor to read and
-        OCR a PDF file (such as invoices, utility bills, or reports) and returns
-        the extracted raw text. It is designed for structured and unstructured
-        sustainability-related documents where precise text extraction is required
-        prior to downstream analysis (e.g. energy consumption parsing).
+        Args:
+            document_url (str): URL or path to the document.
 
-        The function assumes:
-        - The document is accessible locally (downloaded beforehand).
-        - The document is a PDF (`application/pdf`).
-
-        Parameters
-        ----------
-        document_url : str
-            URL or file path to the PDF document
-
-        Returns
-        -------
-        str
-            The full extracted text content of the document as a single string,
-            preserving reading order as returned by Document AI.
-
-        Raises
-        ------
-        google.api_core.exceptions.GoogleAPICallError
-            If the Document AI API request fails.
-        google.api_core.exceptions.NotFound
-            If the specified processor does not exist or is inaccessible.
-        IOError
-            If the document file cannot be read from the provided path.
+        Returns:
+            str: Extracted text content.
         """
-
         try:
-            if 'storage.googleapis.com' in document_url or 'firebasestorage.app' in document_url:
-                print(f"Detected GCS URL, using storage client", flush=True)
-                image_content = self._download_from_gcs(document_url)
+            gcs_identifiers = ['storage.googleapis.com', 'firebasestorage.app', 'storage.cloud.google.com', 'gs://']
+            is_gcs = any(id in document_url for id in gcs_identifiers)
+
+            if is_gcs:
+                print(f"Detected GCS document", flush=True)
+                # Skip Document AI for native text formats
+                if any(ext in document_url.lower() for ext in ['.txt', '.csv']):
+                    print(f"Skipping Document AI for text-based file", flush=True)
+                    return self._download_from_gcs(document_url)
+                else:
+                    image_content = self._download_from_gcs(document_url)
             elif document_url.startswith("http://") or document_url.startswith("https://"):
-                print(f"Downloading PDF from HTTP URL", flush=True)
+                print(f"Downloading file via HTTP", flush=True)
                 image_content = self._download_from_http(document_url)
             else:
                 if not os.path.exists(document_url):
                     raise FileNotFoundError(f"File not found: {document_url}")
                 
-                with open(document_url, "rb") as image:
-                    image_content = image.read()
-                print(f"PDF loaded, size: {len(image_content) / 1_000_000:.2f} MB", flush=True)
+                with open(document_url, "rb") as f:
+                    image_content = f.read()
+                print(f"Local file loaded (size: {len(image_content) / 1_024:.2f} KB)", flush=True)
 
             raw_doc = documentai_v1.RawDocument(
                 content=image_content,
@@ -478,6 +494,63 @@ class ToolList:
                 
         return formatted
 
+    def fetch_octopus_usage(self, user_id: str, days_back: int = 7, period_from: str = None, period_to: str = None):
+        """Fetches electricity usage for a user from Octopus Energy. Supports specific date ranges."""
+        try:
+            print(f"[Tool] Fetching energy data from Octopus for user: {user_id}, range: {period_from} to {period_to}")
+            # 1. Fetch energy settings from Firestore
+            session_id = f"{datetime.now().strftime('%Y%m%d')}"
+            firestore = FireStoreChat(user_id, session_id) 
+            settings = firestore.get_user_energy_context()
+            
+            if not settings:
+                return f"No energy settings (account number) found for user {user_id} in Firestore."
+            
+            account_number = settings.get("account_number")
+            secret_name = settings.get("octopus_secret_name")
+            
+            if not all([account_number, secret_name]):
+                return f"Incomplete energy settings found for user {user_id}. Need account number and secret_name."
+
+            # 2. Fetch from API
+            client = OctopusClient(self.project_id)
+            api_key = client.get_secret(secret_name)
+            account_data = client.get_account_details(account_number=account_number, api_key=api_key)
+            mpan_list = account_data["mpan_list"]
+            start_date = account_data["start_date"]
+
+            if period_from and period_from < start_date:
+                return f"No data available for the selected period. Please select a period after {start_date}"
+            if period_to and period_to > datetime.now().strftime("%Y-%m-%d"):
+                period_to = datetime.now().strftime("%Y-%m-%d")
+
+            energy_data_list = []
+
+            for mpan in mpan_list:
+                for serial in mpan_list[mpan]:
+                    energy_data = client.get_summarized_usage(user_id, mpan, serial, secret_name, days_back, period_from, period_to)
+                    
+                    if not energy_data:
+                        print(f"No new data for user {user_id}.")
+                        continue
+
+                    energy_data_list.append(energy_data)
+            
+            if not energy_data_list:
+                return "No energy consumption data found for the requested period."
+            
+            # Format a summary for the agent to read
+            summary = "Octopus Energy Report:\n"
+            for data in energy_data_list:
+                summary += (
+                    f"- Meter {data.meter_serial} ({data.mpan}): "
+                    f"{data.consumption_kwh:.2f} kWh from {data.period_start[:10]} to {data.period_end[:10]}\n"
+                )
+            
+            return summary
+        except Exception as e:
+            return f"Error fetching from Octopus: {str(e)}"
+
     def get_tools(self) -> list[Tool]:
         google_search_tool = Tool(
             name="google_search",  # The name the LLM calls
@@ -514,18 +587,13 @@ class ToolList:
             func=self.update_action
         )
         
-        document_read_tool = Tool(
+        document_read_tool = StructuredTool(
             name="document_read",
-            description=(
-                "Extract text from a PDF using Document AI.\n"
-                "You MUST call this tool using JSON only.\n"
-                "Input schema:\n"
-                "{ \"document_url\": \"string\" }\n"
-                "DO NOT write code.\n"
-                "DO NOT use print().\n"
-                "DO NOT reference default_api.\n"
-                "Return only a JSON tool call."
-            ),
+            description="""
+            Extract text from files (PDF, TXT, CSV). 
+            Use this to read specific sustainability reports, utility bills (PDF), or Octopus API data logs (TXT/CSV).
+            Accepts: Public URLs, Firebase URLs, or GCS Console URLs (storage.cloud.google.com).
+            """,
             args_schema=document_read_input,
             func=lambda document_url: self._document_read(document_url), 
         )
@@ -537,7 +605,17 @@ class ToolList:
             func=self.vertex_search
         )
         
-        tools_list = [google_search_tool, document_read_tool, read_actions_tool, add_action_tool, remove_action_tool, update_action_tool, vertex_search_tool]
+        octopus_fetch_tool = StructuredTool(
+            name="fetch_octopus_usage",
+            description="""
+            Fetch LIVE energy consumption data directly from Octopus Energy API. 
+            Use this if the user asks for energy data that isnt available in the database or very recent data (e.g. today or yesterday) or specifically asks for a fresh catch.
+            """,
+            args_schema=EnergyFetchInput,
+            func=self.fetch_octopus_usage
+        )
+
+        tools_list = [google_search_tool, document_read_tool, read_actions_tool, add_action_tool, remove_action_tool, update_action_tool, vertex_search_tool, octopus_fetch_tool]
 
         return tools_list
 

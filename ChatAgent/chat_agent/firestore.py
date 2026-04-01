@@ -163,6 +163,22 @@ class FireStoreChat():
             print(f"Error loading user context: {e}")
             return ""
 
+    def get_user_energy_context(self):
+        """Fetch energy settings (account number, secret_name) for a user."""
+        try:
+            doc = db.collection("users").document(self.user_id).get()
+            if doc.exists:
+                data = doc.to_dict()
+                return {
+                    "account_number": data.get("octopus_account_num"),
+                    "octopus_secret_name": data.get("octopus_secret_name"),
+                    "provider": data.get("energy_provider", "Octopus")
+                }
+            return None
+        except Exception as e:
+            print(f"Error fetching energy settings: {e}")
+            return None
+
     def set_status(self, status_key):
         """Update the session document with a witty status message."""
         status_map = {
@@ -217,4 +233,3 @@ class FireStoreChat():
             print(f"[Firestore] Status updated to: {message}")
         except Exception as e:
             print(f"Error updating status: {e}")
-        

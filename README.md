@@ -11,9 +11,12 @@ A conversational AI agent built with Langchain and Google Vertex AI, designed to
 *   **Intelligent Intent Classification:** Automatically routes queries to specialized planning, action, or generalist agents.
 *   **Dynamic Model Selection:** Optimizes performance by switching between Flash and Pro models based on conversation complexity.
 *   **Background Intelligence:** Generates tailored follow-up suggestions asynchronously to predict user needs without performance hits.
+*   **Hybrid Energy Data Strategy:** Implements a hybrid retrieval layer. Historical data is ingested into RAG (Vertex AI Search), while real-time data is fetched directly via the Octopus Energy API.
+*   **Automated Ingestion Pipeline:** A GCS-to-BigQuery pipeline triggered by Eventarc. Supports OCR via Document AI and semantic extraction via Gemini 3.1.
 *   **Google Search & Vertex AI Search Integration:** Combines real-time web data with internal knowledge base retrieval.
-*   **Document AI Integration:** Seamlessly processes PDF documents to extract and analyze structured data.
+*   **Document AI Integration:** Seamlessly processes PDF, TXT, and CSV documents to extract and analyze structured sustainability data.
 *   **Persistent Context:** Uses Firestore for long-term memory, session management, and cross-session summaries.
+*   **Secure Credential Management:** Integrated with Google Secret Manager to handle API keys and sensitive user configurations.
 
 ## Getting Started
 
@@ -26,6 +29,8 @@ Follow these steps to get your multiTool-chatAgent up and running.
     *   Discovery Engine API
     *   Document AI API
     *   Firestore API
+    *   Secret Manager API (for energy provider integrations)
+    *   Cloud Run & Eventarc (for the ingestion pipeline)
 *   **Google Cloud SDK (`gcloud` CLI):** Installed and authenticated on your machine.
     *   Run `gcloud auth application-default login` to authenticate.
 
@@ -88,15 +93,18 @@ The application will be accessible at `http://127.0.0.1:8000`.
 ```
 ChatAgent/
 ├── chat_agent/           # Main application package
-│   ├── core/             # Core logic and exceptions
+│   ├── core/             # Core logic, Pydantic models, and Octopus Client
 │   ├── data/             # Planning questions and data files
-│   ├── prompts/          # System instructions and prompts
+│   ├── prompts/          # System instructions and mode-specific prompts
 │   ├── __init__.py
 │   ├── agent.py          # Core Langchain agent logic
 │   ├── app.py            # FastAPI application definition
 │   ├── classifier.py     # Intent classification logic
-│   ├── firestore.py      # Firestore integration
-│   └── tools.py          # Tool definitions
+│   ├── firestore.py      # Firestore integration and session management
+│   └── tools.py          # Tool definitions (Search, Octopus, Document AI)
+├── scripts/              # Infrastructure and Data Sync scripts
+│   ├── ingestion_pipeline.py # Eventarc-triggered Cloud Run ingestion service
+│   └── octopus_sync.py       # Historical energy data sync script
 ├── test/                 # Test suite
 │   └── test_async.py
 ├── setup.py              # Installation script for editable mode
