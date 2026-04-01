@@ -506,7 +506,7 @@ class ToolList:
             if not settings:
                 return f"No energy settings (account number) found for user {user_id} in Firestore."
             
-            account_number = settings.get("octopus_account_num")
+            account_number = settings.get("account_number")
             secret_name = settings.get("octopus_secret_name")
             
             if not all([account_number, secret_name]):
@@ -517,6 +517,12 @@ class ToolList:
             api_key = client.get_secret(secret_name)
             account_data = client.get_account_details(account_number=account_number, api_key=api_key)
             mpan_list = account_data["mpan_list"]
+            start_date = account_data["start_date"]
+
+            if period_from and period_from < start_date:
+                return f"No data available for the selected period. Please select a period after {start_date}"
+            if period_to and period_to > datetime.now().strftime("%Y-%m-%d"):
+                period_to = datetime.now().strftime("%Y-%m-%d")
 
             energy_data_list = []
 
@@ -530,7 +536,18 @@ class ToolList:
 
                     energy_data_list.append(energy_data)
             
-            return energy_data_list
+            if not energy_data_list:
+                return "No energy consumption data found for the requested period."
+            
+            # Format a summary for the agent to read
+            summary = "Octopus Energy Report:\n"
+            for data in energy_data_list:
+                summary += (
+                    f"- Meter {data.meter_serial} ({data.mpan}): "
+                    f"{data.consumption_kwh:.2f} kWh from {data.period_start[:10]} to {data.period_end[:10]}\n"
+                )
+            
+            return summary
         except Exception as e:
             return f"Error fetching from Octopus: {str(e)}"
 
