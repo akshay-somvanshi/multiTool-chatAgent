@@ -537,7 +537,7 @@ class ToolList:
                     energy_data_list.append(energy_data)
             
             if not energy_data_list:
-                return "No energy consumption data found for the requested period."
+                return "No energy consumption data found for the requested period. Ask user if they want to add new sources to cover for this period."
             
             # Format a summary for the agent to read
             summary = "Octopus Energy Report:\n"

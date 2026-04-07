@@ -11,6 +11,7 @@ class EnergyConsumption(BaseModel):
     meter_serial: str
     document_type: str = "api_consumption"
     mpan: str
+    total_cost_gbp: float = 0.0
 
     def to_metadata(self):
         """Convert to the flat dictionary format used for GCS blob metadata."""
@@ -18,6 +19,7 @@ class EnergyConsumption(BaseModel):
             "user_id": self.user_id,
             "provider": self.provider,
             "consumption_kwh": str(self.consumption_kwh),
+            "total_cost_gbp": str(self.total_cost_gbp),
             "period_start": self.period_start,
             "period_end": self.period_end,
             "document_type": self.document_type,
