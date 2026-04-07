@@ -85,6 +85,10 @@ class OctopusClient:
         total_kwh = sum(r['consumption'] for r in consumption_results)
         total_cost_pence = 0.0
 
+        # Some Mpan and serial numbers have zero consumptions
+        if not consumption_results:
+            return None
+
         for consumption in consumption_results:
             consumption_amount = consumption['consumption']
             # Clean up
@@ -99,7 +103,7 @@ class OctopusClient:
                 print(f"Warning: No price found for interval {consumption_time}")
         
         total_cost_gbp = total_cost_pence / 100.0
-        print(f"Total Consumption: {total_kwh:.2f} kWh | Total Cost: £{total_cost_gbp:.2f}")
+        # print(f"Total Consumption: {total_kwh:.2f} kWh | Total Cost: £{total_cost_gbp:.2f}")
         
         return EnergyConsumption(
             user_id=user_id,

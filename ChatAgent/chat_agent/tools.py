@@ -495,7 +495,7 @@ class ToolList:
         return formatted
 
     def fetch_octopus_usage(self, user_id: str, days_back: int = 7, period_from: str = None, period_to: str = None):
-        """Fetches electricity usage for a user from Octopus Energy. Supports specific date ranges."""
+        """Fetches electricity usage and cost for a user from Octopus Energy. Supports specific date ranges."""
         try:
             print(f"[Tool] Fetching energy data from Octopus for user: {user_id}, range: {period_from} to {period_to}")
             # 1. Fetch energy settings from Firestore
@@ -529,7 +529,6 @@ class ToolList:
             for mpan in mpan_list:
                 for serial in mpan_list[mpan]:
                     energy_data = client.get_summarized_usage(user_id, mpan, serial, secret_name, days_back, period_from, period_to)
-                    
                     if not energy_data:
                         print(f"No new data for user {user_id}.")
                         continue
@@ -545,10 +544,13 @@ class ToolList:
                 summary += (
                     f"- Meter {data.meter_serial} ({data.mpan}): "
                     f"{data.consumption_kwh:.2f} kWh from {data.period_start[:10]} to {data.period_end[:10]}\n"
+                    f"Total Cost: £{data.total_cost_gbp:.2f}\n"
                 )
-            
+
             return summary
+
         except Exception as e:
+            print(f"[Tool] Failed to get report from Octopus Energy: {str(e)}")
             return f"Error fetching from Octopus: {str(e)}"
 
     def get_tools(self) -> list[Tool]:
@@ -608,7 +610,7 @@ class ToolList:
         octopus_fetch_tool = StructuredTool(
             name="fetch_octopus_usage",
             description="""
-            Fetch LIVE energy consumption data directly from Octopus Energy API. 
+            Fetch LIVE energy consumption data and cost directly from Octopus Energy API. 
             Use this if the user asks for energy data that isnt available in the database or very recent data (e.g. today or yesterday) or specifically asks for a fresh catch.
             """,
             args_schema=EnergyFetchInput,

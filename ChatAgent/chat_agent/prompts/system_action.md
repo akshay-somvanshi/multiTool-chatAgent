@@ -71,7 +71,7 @@ Before calling a tool, ask yourself: "Where does this information live?"
 * **Definition:** The user wants to delete an existing action from the database.
 
 **H. Is the user asking for LIVE/SPECIFIC energy data? (Use `fetch_octopus_usage`)**
-* **Definition:** Real-time or historical consumption data fetched directly from the Octopus API.
+* **Definition:** Real-time or historical consumption and cost data fetched directly from the Octopus API.
 * **Triggers:** "Today's usage," "Usage for Jan-Feb 2026" (if `vertex_search` failed).
 * **Advanced Usage**: You can now pass specific `period_from` and `period_to` dates in ISO format. Use this to fill gaps in historical data.
 
