@@ -5,8 +5,9 @@ from google import genai
 
 from pydantic import BaseModel, Field
 from typing import List, Optional, Any
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
+from chat_agent.core.auth import get_user_id
 
 import os
 import json
@@ -52,25 +53,6 @@ client = genai.Client(
     location=location
 )
 
-# client.models.generate_content(
-#     model=model,
-#     contents=prompt
-# )
-
-# Test for google tool
-# result1 = generalist.agent.invoke({"messages": [{"role": "user", "content": "Google search who won the nobel prize in physics in 2025?"}]})
-# print(f"Google Result: {result1}")
-# print(f"Google Result: {result1['messages'][-1].content}")
-
-# Test for vertex AI search
-# result2 = classifier.invoke("Tell me about my consumption from electricity bill")
-# print(f'Vertex AI search: {result2}')
-
-# Test classifier
-# query = "Can you extract the electricity information from this: https://storage.googleapis.com/dash-beta-e61d0.firebasestorage.app/users/CORZZX0MxTQtGyAD7PSCI1HLp3y2/uploads/Energia%20-%20luglio%202024_ft%2020824956.pdf"
-# response = classifier.invoke(query, "QLRmwioROPcNz3t80XzUhn9icey1")
-# print(response)
-
 # API setup
 app = FastAPI(title="Chatbot", description="Dash agent", version="0.1")
 
@@ -84,7 +66,7 @@ app.add_middleware(
 
 class ChatIn(BaseModel):
     message: str = Field(description="User message")
-    user_id: str = Field(description="Unique user identifier")
+    user_id: Optional[str] = Field(None, description="Legacy user identifier (ignored if token is present)")
 
 class UIAction(BaseModel):
     type: str
@@ -103,9 +85,9 @@ async def root():
     return {"message": "The chatbot seems to be up and running!"}
 
 @app.post("/chat", response_model=ChatOut)
-async def chat(body: ChatIn):
+async def chat(body: ChatIn, user_id: str = Depends(get_user_id)):
     try:
-        response = await classifier.ainvoke(body.message, body.user_id)
+        response = await classifier.ainvoke(body.message, user_id)
         return ChatOut(response=response)
     
     except Exception as e:
