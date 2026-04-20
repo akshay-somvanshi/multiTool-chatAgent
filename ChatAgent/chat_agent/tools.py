@@ -7,8 +7,10 @@ from google.cloud import documentai_v1
 import os
 import dotenv
 import requests
+import socket
+import ipaddress
 import google
-from urllib.parse import urlparse, parse_qs
+from urllib.parse import urlparse, parse_qs, unquote
 from google.cloud import storage
 from datetime import datetime
 
@@ -160,6 +162,8 @@ class ToolList:
                 else:
                     raise ValueError(f"Unsupported GCS URL format: {url}")
 
+            # Decode the blob path
+            blob_path = unquote(blob_path)
             print(f"Downloading from GCS: bucket={bucket_name}, path={blob_path}", flush=True)
             
             storage_client = storage.Client(project=self.project_id)
@@ -184,13 +188,44 @@ class ToolList:
         headers = {
             'User-Agent': 'Mozilla/5.0 (compatible; DocumentAI/1.0)'
         }
-        
+
+        # Define forbidden ranges
+        forbidden_ranges = [
+            ipaddress.ip_network('127.0.0.0/8'),      # Loopback
+            ipaddress.ip_network('10.0.0.0/8'),       # RFC 1918
+            ipaddress.ip_network('172.16.0.0/12'),    # RFC 1918
+            ipaddress.ip_network('192.168.0.0/16'),   # RFC 1918
+            ipaddress.ip_network('169.254.0.0/16'),   # Link-local / Metadata
+            ipaddress.ip_network('100.64.0.0/10'),    # CGNAT
+            ipaddress.ip_network('199.36.153.4/30'),  # GCP Private Google Access
+            ipaddress.ip_network('199.36.153.8/30'),  # GCP Private Google Access
+            ipaddress.ip_network('::1/128'),          # IPv6 Loopback
+        ]
+
+        parsed_url = urlparse(url)
+        host = parsed_url.hostname
+
+        # Resolve hostname to IP
+        try:
+            ip_addr = socket.gethostbyname(host)
+            ip_obj = ipaddress.ip_address(ip_addr)
+
+            # Check if IP is in forbidden range
+            for network in forbidden_ranges:
+                if ip_obj in network:
+                    raise ValueError(f"Access denied: URL resolves to forbidden IP range: {ip_addr}")
+        except socket.gaierror:
+            print(f"Warning: Could not resolve hostname {host}")
+        except ValueError as e:
+            raise ValueError(f"Security check failed: {e}")
+
         response = requests.get(
             url, 
             timeout=60,
             headers=headers,
             stream=True
         )
+
         response.raise_for_status()
         return response.content
     
@@ -226,13 +261,6 @@ class ToolList:
             elif document_url.startswith("http://") or document_url.startswith("https://"):
                 print(f"Downloading file via HTTP", flush=True)
                 image_content = self._download_from_http(document_url)
-            else:
-                if not os.path.exists(document_url):
-                    raise FileNotFoundError(f"File not found: {document_url}")
-                
-                with open(document_url, "rb") as f:
-                    image_content = f.read()
-                print(f"Local file loaded (size: {len(image_content) / 1_024:.2f} KB)", flush=True)
 
             raw_doc = documentai_v1.RawDocument(
                 content=image_content,
