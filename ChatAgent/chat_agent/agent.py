@@ -4,6 +4,7 @@ import vertexai
 from langchain.agents import create_agent
 from langchain.agents.middleware import wrap_model_call, ModelRequest
 from chat_agent.firestore import FireStoreChat
+from chat_agent.tools import ToolList
 
 import os
 import json
@@ -24,11 +25,10 @@ class EmptyLLMResponseError(Exception):
     pass
 
 class agent:
-    def __init__(self, model_name: str,  system_prompt: str, tool_set, search_input):
+    def __init__(self, model_name: str,  system_prompt: str, search_input):
         self.basic_model = model_name
         self.advanced_model = "gemini-3.1-pro-preview"
 
-        self.tool_list = tool_set
         self.system_prompt = system_prompt
         self.search_input = search_input
 
@@ -65,7 +65,7 @@ class agent:
             top_p=self.model_kwargs.get('top_p'),
             top_k=self.model_kwargs.get('top_k'),
             location="global"
-        ).bind_tools(self.tool_list)
+        )
 
         self.advanced_llm = ChatVertexAI(
             model_name=self.advanced_model,
@@ -74,7 +74,7 @@ class agent:
             top_p=self.model_kwargs.get('top_p'),
             top_k=self.model_kwargs.get('top_k'),
             location="global"
-        ).bind_tools(self.tool_list)
+        )
 
         # Use Flash for summaries to save time and cost
         self.summary_llm = ChatVertexAI(
@@ -83,7 +83,20 @@ class agent:
             location="global"
         )
 
-        # Enable switching to pro model 
+    def _init_FireStore(self, user_id: str, session_id: str = None):
+        """Initialise Firestore to obtain chat history or user info for a specific user/session"""
+        return FireStoreChat(
+            user_id=user_id,
+            session_id=session_id
+        )
+
+    def _executor(self, user_id):
+        tool_list = ToolList(user_id).get_tools()
+
+        # Bind both LLM with tools
+        basic_llm_with_tools = self.basic_llm.bind_tools(tool_list)
+        advanced_llm_with_tools = self.advanced_llm.bind_tools(tool_list)
+
         @wrap_model_call
         async def _amodel_selection(request: ModelRequest, handler):
             """Choose model based on conversation complexity"""
@@ -91,45 +104,33 @@ class agent:
 
             # Choose larger model for longer conversations 
             if message_count > 10:
-                model = self.advanced_llm
+                model = advanced_llm_with_tools
             else:
-                model = self.basic_llm
+                model = basic_llm_with_tools
 
             return await handler(request.override(model=model))
 
-        @wrap_model_call
-        def _model_selection(request: ModelRequest, handler):
-            """Choose model based on conversation complexity"""
-            message_count = len(request.state["messages"])
+        # @wrap_model_call
+        # def _model_selection(request: ModelRequest, handler):
+        #     """Choose model based on conversation complexity"""
+        #     message_count = len(request.state["messages"])
 
-            # Choose larger model for longer conversations 
-            if message_count > 10:
-                model = self.advanced_llm
-            else:
-                model = self.basic_llm
+        #     # Choose larger model for longer conversations 
+        #     if message_count > 10:
+        #         model = self.advanced_llm
+        #     else:
+        #         model = self.basic_llm
 
-            return handler(request.override(model=model))
+        #     return handler(request.override(model=model))
 
-        self._model_selection = _amodel_selection
-        self.llm = self.basic_llm # Use basic_llm
-        self.agent = self._create_agent(self.llm)
-
-    def _init_FireStore(self, user_id: str, session_id: str = None):
-        """Initialise Firestore to obtain chat history or user info for a specific user/session"""
-        return FireStoreChat(
-            user_id=user_id,
-            session_id=session_id
-        )
-    
-    def _create_agent(self, llm):
-        # Create agent
         agent = create_agent(
-            llm,
-            tools=self.tool_list,
+            basic_llm_with_tools,
+            tools=tool_list,
             system_prompt=self.system_prompt,
             context_schema=self.search_input,
-            middleware=[self._model_selection],
+            middleware=[_amodel_selection],
         )
+
         return agent
 
     def _extract_text_content(self, content):
@@ -210,6 +211,9 @@ class agent:
         return summary
     
     async def ainvoke_res(self, query: str, user_id: str = None, session_id: str = None):
+        # Create executor - quick tool binding
+        executor = self._executor(user_id)
+
         total_start = time.perf_counter()
         max_retries = 2
         session_id = self._get_daily_session_id(user_id)
@@ -280,7 +284,7 @@ class agent:
         for attempt in range(max_retries):
             try:
                 step_start = time.perf_counter()
-                result = await self.agent.ainvoke({"messages": recent_messages})
+                result = await executor.ainvoke({"messages": recent_messages})
                 print(f"[Profiling] LLM Agent (attempt {attempt+1}) took {time.perf_counter() - step_start:.2f}s")
                 
                 if result.get("finish_reason") == "MALFORMED_FUNCTION_CALL":
@@ -336,6 +340,8 @@ class agent:
             return ""
     
     def invoke_res(self, query: str, user_id: str = None, session_id: str = None):
+        executor = self._executor(user_id)
+        
         max_retries = 2
         session_id = self._get_daily_session_id(user_id)
 
@@ -370,7 +376,7 @@ class agent:
         # Extract text response
         for attempt in range(max_retries):
             try:
-                result = self.agent.invoke({"messages": recent_messages})
+                result = executor.invoke({"messages": recent_messages})
                 print(result)
                 if result.get("finish_reason") == "MALFORMED_FUNCTION_CALL":
                     raise RuntimeError("Tool call failed due to malformed arguments")

@@ -1,7 +1,7 @@
 from google import genai
 import time
 
-from chat_agent.tools import ToolList, search_query
+from chat_agent.tools import search_query, ToolList
 from chat_agent.agent import agent
 from chat_agent.firestore import FireStoreChat
 from datetime import datetime
@@ -18,12 +18,11 @@ class classifier():
             location=location_global
         )
         
-        self.model = 'gemini-3-flash-preview'
+        self.model = 'gemini-3-flash-preview'   
 
-        self.tool = ToolList()
-        self.generalist = agent(self.model, system_instruction_gen, self.tool.get_tools(), search_query)
-        self.planning = agent(self.model, system_instruction_plan, self.tool.get_tools(), search_query)
-        self.action = agent(self.model, system_instruction_act, self.tool.get_tools(), search_query)
+        self.generalist = agent(self.model, system_instruction_gen, search_query)
+        self.planning = agent(self.model, system_instruction_plan, search_query)
+        self.action = agent(self.model, system_instruction_act, search_query)
 
     def _get_daily_session_id(self, user_id: str) -> str:
         """Create one session per day"""

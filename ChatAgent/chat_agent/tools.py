@@ -19,6 +19,33 @@ from chat_agent.firestore import FireStoreChat
 
 dotenv.load_dotenv()
 
+# Globally initialise clients
+project_id = os.getenv("GOOGLE_PROJECT_ID")
+location_vertexAI = "eu"
+document_ai_id = os.getenv("DOCUMENT_AI_ID")
+
+# Initialise document AI client
+# Set api endpoint to eu
+opts = ClientOptions(api_endpoint=f"{location_vertexAI}-documentai.googleapis.com")
+docai_client = documentai_v1.DocumentProcessorServiceClient(client_options=opts)
+# Processor reference
+processor_name = docai_client.processor_path(
+    project_id, 
+    location_vertexAI,
+    document_ai_id
+)
+
+# Initialise discovery engine client
+client_options = (
+    ClientOptions(api_endpoint=f"{location_vertexAI}-discoveryengine.googleapis.com")
+    if location_vertexAI != "global"
+    else None
+)
+discovery_engine_client = discoveryengine.ConversationalSearchServiceClient(client_options=client_options) 
+
+# Google Search
+search_wrapper = GoogleSearchAPIWrapper()
+
 class google_search_input(BaseModel):
     search_query: str = Field(
         description='The natural language query to search on google'
@@ -28,9 +55,6 @@ class vertex_search_input(BaseModel):
     query: str = Field(
         description='The natural language query to search against the data store'
     ),
-    user_id: str = Field(
-        description='The id of the user whos documents can be accessed. '
-    )
 
 class document_read_input(BaseModel):
     document_url: str = Field(
@@ -42,19 +66,12 @@ class search_query(BaseModel):
         description='The natural language query to process'
     )
 
-class get_api(BaseModel):
-    user_id: str = Field(
-        description="User id whos actions are fetched from the database"
-    )
-
 class EnergyFetchInput(BaseModel):
-    user_id: str = Field(description="The user ID")
     days_back: int = Field(default=7, description="Number of days to fetch consumption for (used if period_from is not set)")
     period_from: str | None = Field(default=None, description="Start of the period in ISO format (e.g. 2026-01-01T00:00:00Z)")
     period_to: str | None = Field(default=None, description="End of the period in ISO format (e.g. 2026-02-01T00:00:00Z)")
 
 class AddActionInput(BaseModel):
-    user_id: str = Field(description="User ID")
     action_id: str = Field(description="Unique action identifier of type 'action_003'")
     action_name: str = Field(description="Name of the action")
     action_type: str = Field(description="Type of action (e.g., energy_efficiency)")
@@ -68,7 +85,6 @@ class AddActionInput(BaseModel):
     status: str = Field(description="Current status. Default : not_started")
 
 class UpdateActionInput(BaseModel):
-    user_id: str = Field(description="User ID")
     action_id: str = Field(description="Unique action identifier of type 'action_003'")
     actual_co2_reduced: float | None = Field(description="Actual CO2 reduced in tCO2e")
     actual_spend: float | None = Field(description="Actual spend in GBP")
@@ -77,43 +93,24 @@ class UpdateActionInput(BaseModel):
     day_completed: datetime | None = Field(description="Date when action was completed")
 
 class RemoveActionInput(BaseModel):
-    user_id: str = Field(description="User ID")
     action_id: str = Field(description="Unique action identifier of type 'action_003'")
 
+class ReadActionInput(BaseModel):
+    pass
+
 class ToolList:
-    def __init__(self):
-        self.search_wrapper = GoogleSearchAPIWrapper()
+    def __init__(self, user_id: str):
+        self.user_id = user_id
         self.project_id = os.getenv("GOOGLE_PROJECT_ID")
         self.location = os.getenv("GOOGLE_LOCATION")
-        self.location_vertexAI = "eu"
         self.engine_id = os.getenv("VERTEX_ENGINE_ID")
-        self.document_ai_id = os.getenv("DOCUMENT_AI_ID")
-
-        # Initialise document AI client
-        # Set api endpoint to eu
-        opts = ClientOptions(api_endpoint=f"{self.location_vertexAI}-documentai.googleapis.com")
-        self.docai_client = documentai_v1.DocumentProcessorServiceClient(client_options=opts)
-        # Processor reference
-        self.processor_name = self.docai_client.processor_path(
-            self.project_id, 
-            self.location_vertexAI,
-            self.document_ai_id
-        )
-
-        # Initialise discovery engine client
-        client_options = (
-            ClientOptions(api_endpoint=f"{self.location_vertexAI}-discoveryengine.googleapis.com")
-            if self.location_vertexAI != "global"
-            else None
-        )
-        self.discovery_engine_client = discoveryengine.ConversationalSearchServiceClient(client_options=client_options) 
 
     def _logged_search(
         self,
         query
     ):
         print(f"Google called with query: {query}")
-        result = self.search_wrapper.run(query)
+        result = search_wrapper.run(query)
         print(f"Search result: {result[:200]}...")
         return result
 
@@ -243,18 +240,18 @@ class ToolList:
             )
 
             # Verify processor name
-            print(f"Using processor: {self.processor_name}", flush=True)
+            print(f"Using processor: {processor_name}", flush=True)
 
             # Create request
             request = documentai_v1.ProcessRequest(
-                name=self.processor_name, 
+                name=processor_name, 
                 raw_document=raw_doc
             )
             print("ProcessRequest created, calling Document AI...", flush=True)
             
             # Call Document AI with explicit error handling
             try:
-                result = self.docai_client.process_document(
+                result = docai_client.process_document(
                     request=request,
                     timeout=600.0
                 )
@@ -292,12 +289,11 @@ class ToolList:
             raise
     
     def read_actions(
-            self,
-            user_id: str
+            self
     ) -> dict:
         """ Fetches all sustainability actions for the user. Use this when you want to look up the actions in the database.W"""
         try:
-            return api_client.view_actionList(user_id)
+            return api_client.view_actionList(self.user_id)
         except Exception as e:
             return {
                 "error": {e},
@@ -306,7 +302,6 @@ class ToolList:
         
     def add_action(
             self,
-            user_id: str,
             action_id: str,
             action_name: str,
             action_type: str,
@@ -335,7 +330,7 @@ class ToolList:
                 "timeline_end": timeline_end.isoformat(),
                 "status": status
             }
-            return api_client.add_action_service(user_id, action_payload)
+            return api_client.add_action_service(self.user_id, action_payload)
         except Exception as e:
             return {
                 "error": {e}
@@ -343,12 +338,11 @@ class ToolList:
         
     def remove_action(
             self,
-            user_id: str,
             action_id: str
     ):
         """Removes a sustainability action from the database. Use this when you need to delete an action from the database."""
         try:
-            return api_client.remove_action_service(user_id, action_id)
+            return api_client.remove_action_service(self.user_id, action_id)
         except Exception as e:
             return {
                 "error": {e}
@@ -356,7 +350,6 @@ class ToolList:
         
     def update_action(
             self,
-            user_id: str,
             action_id: str,
             actual_co2_reduced: float,
             actual_spend: float,
@@ -373,20 +366,19 @@ class ToolList:
                 "day_start": day_started.isoformat() if day_started else None,
                 "day_end": day_completed.isoformat() if day_completed else None,
             }
-            return api_client.update_action_service(user_id, action_id, update_action_payload)
+            return api_client.update_action_service(self.user_id, action_id, update_action_payload)
         except Exception as e:
             return {
                 "error": {e}
             }
 
-    def vertex_search(self, query: str, user_id: str):
+    def vertex_search(self, query: str):
         """
         Search user's sustainability documents (bills, emissions data, etc.) 
         to answer specific questions about their energy or environmental impact.
         
         Args:
             query: Natural language question (e.g. 'What was my electricity cost in March?')
-            user_id: The ID of the user whose documents to search.
         """
         # The full resource name of the search app serving config
         serving_config = f"projects/{self.project_id}/locations/{self.location_vertexAI}/collections/default_collection/engines/{self.engine_id}/servingConfigs/default_config"
@@ -428,11 +420,11 @@ class ToolList:
             session=None,  # Include previous session ID to continue a conversation
             query_understanding_spec=query_understanding_spec,
             answer_generation_spec=answer_generation_spec,
-            user_pseudo_id=user_id,  # Add user pseudo-identifier for queries.
+            user_pseudo_id=self.user_id,  # Add user pseudo-identifier for queries.
         )
 
         # Make the request
-        response = self.discovery_engine_client.answer_query(request)
+        response = discovery_engine_client.answer_query(request)
 
         return self._format_vertex_response(response)
 
@@ -494,23 +486,23 @@ class ToolList:
                 
         return formatted
 
-    def fetch_octopus_usage(self, user_id: str, days_back: int = 7, period_from: str = None, period_to: str = None):
+    def fetch_octopus_usage(self, days_back: int = 7, period_from: str = None, period_to: str = None):
         """Fetches electricity usage and cost for a user from Octopus Energy. Supports specific date ranges."""
         try:
-            print(f"[Tool] Fetching energy data from Octopus for user: {user_id}, range: {period_from} to {period_to}")
+            print(f"[Tool] Fetching energy data from Octopus for user: {self.user_id}, range: {period_from} to {period_to}")
             # 1. Fetch energy settings from Firestore
             session_id = f"{datetime.now().strftime('%Y%m%d')}"
-            firestore = FireStoreChat(user_id, session_id) 
+            firestore = FireStoreChat(self.user_id, session_id) 
             settings = firestore.get_user_energy_context()
             
             if not settings:
-                return f"No energy settings (account number) found for user {user_id} in Firestore."
+                return f"No energy settings (account number) found for user {self.user_id} in Firestore."
             
             account_number = settings.get("account_number")
             secret_name = settings.get("octopus_secret_name")
             
             if not all([account_number, secret_name]):
-                return f"Incomplete energy settings found for user {user_id}. Need account number and secret_name."
+                return f"Incomplete energy settings found for user {self.user_id}. Need account number and secret_name."
 
             # 2. Fetch from API
             client = OctopusClient(self.project_id)
@@ -528,9 +520,9 @@ class ToolList:
 
             for mpan in mpan_list:
                 for serial in mpan_list[mpan]:
-                    energy_data = client.get_summarized_usage(user_id, mpan, serial, secret_name, days_back, period_from, period_to)
+                    energy_data = client.get_summarized_usage(self.user_id, mpan, serial, secret_name, days_back, period_from, period_to)
                     if not energy_data:
-                        print(f"No new data for user {user_id}.")
+                        print(f"No new data for user {self.user_id}.")
                         continue
 
                     energy_data_list.append(energy_data)
@@ -558,13 +550,13 @@ class ToolList:
             name="google_search",  # The name the LLM calls
             description="Search Google for current events and real-time facts.",
             args_schema=google_search_input,
-            func=self.search_wrapper.run,
+            func=search_wrapper.run,
         )
 
-        read_actions_tool = Tool(
+        read_actions_tool = StructuredTool(
             name = "read_actions",
             description="Reads the existing sustainability actions from the database",
-            args_schema = get_api,
+            args_schema=ReadActionInput,
             func=self.read_actions
         )
 
