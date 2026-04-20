@@ -91,4 +91,5 @@ async def chat(body: ChatIn, user_id: str = Depends(get_user_id)):
         return ChatOut(response=response)
     
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"{type(e).__name__}: {e}")
+        print(f"Internal Error: {e}")
+        raise HTTPException(status_code=500, detail="An error occurred while processing your request. Please try again later.")
