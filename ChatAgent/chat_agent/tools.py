@@ -10,6 +10,7 @@ import requests
 import google
 from urllib.parse import urlparse, parse_qs
 from google.cloud import storage
+from google.cloud import bigquery
 from datetime import datetime
 
 from chat_agent.api_client import api_client
@@ -80,6 +81,19 @@ class RemoveActionInput(BaseModel):
     user_id: str = Field(description="User ID")
     action_id: str = Field(description="Unique action identifier of type 'action_003'")
 
+class SustainabilityROIInput(BaseModel):
+    user_id: str = Field(description="User ID")
+    new_revenue: float = Field(description="New revenue generated this year from sustainability initiatives (£)")
+    retained_revenue: float = Field(description="Revenue retained this year due to sustainability initiatives (£)")
+    ops_cost_reduction: float = Field(description="Operational costs reduced this year (£)")
+    risk_minimized: float = Field(description="Estimated value of business risk minimized (£)")
+    ops_cost_reduction_5y: float = Field(description="Total operational costs reduced in the next 5 years (£)")
+    financing_cost_diff: float = Field(description="Difference in cost of financing (Year 1 - Year 0) (£)")
+    spend_this_year: float = Field(description="Total spend on sustainability this year (£)")
+
+class IndustryInfoInput(BaseModel):
+    industry_name: str = Field(description="The name of the industry to look up guidelines for (e.g., 'Retail', 'Manufacturing')")
+
 class ToolList:
     def __init__(self):
         self.search_wrapper = GoogleSearchAPIWrapper()
@@ -107,6 +121,7 @@ class ToolList:
             else None
         )
         self.discovery_engine_client = discoveryengine.ConversationalSearchServiceClient(client_options=client_options) 
+        self.bq_client = bigquery.Client(project=self.project_id)
 
     def _logged_search(
         self,
@@ -303,6 +318,99 @@ class ToolList:
                 "error": {e},
                 "actions": []
             }
+
+    def calculate_sustainability_roi(
+        self,
+        user_id: str,
+        new_revenue: float,
+        retained_revenue: float,
+        ops_cost_reduction: float,
+        risk_minimized: float,
+        ops_cost_reduction_5y: float,
+        financing_cost_diff: float,
+        spend_this_year: float
+    ) -> dict:
+        """
+        Calculates the Return on Investment (ROI) for a sustainability action using a weighted formula.
+        The weights (probabilities) are fetched from the system configuration.
+        """
+        try:
+            # Fetch probabilities from Firestore
+            session_id = f"roi_{datetime.now().strftime('%Y%m%d')}"
+            firestore = FireStoreChat(user_id, session_id)
+            p = firestore.get_roi_probabilities()
+
+            # Apply formula
+            # ROI = {(New Revenue * P1) + (Retained Revenue * P2) + (Ops cost reduced * P3) + 
+            #        (Risk minimized * P4) + (Ops costs reduced 5y * P5) + (Diff in financing cost * P6)} - Spend
+            
+            revenue_unlocked = (
+                (new_revenue * p["p1_new_revenue"]) +
+                (retained_revenue * p["p2_retained_revenue"]) +
+                (ops_cost_reduction * p["p3_ops_cost_reduction"]) +
+                (risk_minimized * p["p4_risk_minimized"]) +
+                (ops_cost_reduction_5y * p["p5_ops_cost_reduction_5y"]) +
+                (financing_cost_diff * p["p6_financing_cost_diff"])
+            )
+            
+            roi = revenue_unlocked - spend_this_year
+
+            return {
+                "estimated_revenue_unlocked": round(revenue_unlocked, 2),
+                "total_roi": round(roi, 2),
+                "applied_weights": p,
+                "currency": "GBP"
+            }
+        except Exception as e:
+            print(f"ROI Calculation failed: {e}")
+            return {"error": str(e)}
+
+    def get_industry_guidelines(self, industry_name: str) -> dict:
+        """
+        Fetches industry-specific procurement policies and recommended actions from BigQuery.
+        """
+        try:
+            dataset_id = "dash_beta_database"
+            table_id = "industry_guidelines"
+            query = f"""
+                SELECT policy_document, predefined_actions, key_questions 
+                FROM `{self.project_id}.{dataset_id}.{table_id}` 
+                WHERE LOWER(industry_name) = @industry
+            """
+            job_config = bigquery.QueryJobConfig(
+                query_parameters=[
+                    bigquery.ScalarQueryParameter("industry", "STRING", industry_name.lower())
+                ]
+            )
+            
+            query_job = self.bq_client.query(query, job_config=job_config)
+            results = list(query_job.result())
+
+            if not results:
+                return {"message": f"No specific guidelines found for industry: {industry_name}"}
+
+            row = results[0]
+            
+            # Parse JSON fields if they are stored as strings
+            def safe_json_load(data):
+                if isinstance(data, str):
+                    try:
+                        import json
+                        return json.loads(data)
+                    except:
+                        return data
+                return data
+
+            return {
+                "industry": industry_name,
+                "policy_document": row.policy_document,
+                "predefined_actions": safe_json_load(row.predefined_actions),
+                "key_questions": safe_json_load(row.key_questions)
+            }
+
+        except Exception as e:
+            print(f"Error fetching industry guidelines: {e}")
+            return {"error": str(e)}
         
     def add_action(
             self,
@@ -617,7 +725,28 @@ class ToolList:
             func=self.fetch_octopus_usage
         )
 
-        tools_list = [google_search_tool, document_read_tool, read_actions_tool, add_action_tool, remove_action_tool, update_action_tool, vertex_search_tool, octopus_fetch_tool]
+        calculate_roi_tool = StructuredTool(
+            name="calculate_sustainability_roi",
+            description="""
+            Calculates the financial ROI for a sustainability action. 
+            Use this tool BEFORE calling add_action if you need to determine the 'estimated_revenue_unlocked'.
+            You must estimate the formula components (new revenue, retained revenue, etc.) based on the action details.
+            """,
+            args_schema=SustainabilityROIInput,
+            func=self.calculate_sustainability_roi
+        )
+
+        industry_guidelines_tool = StructuredTool(
+            name="get_industry_guidelines",
+            description="""
+            Fetches industry-specific procurement policies and recommended actions.
+            Use this tool to understand the constraints and standard actions for the user's specific industry.
+            """,
+            args_schema=IndustryInfoInput,
+            func=self.get_industry_guidelines
+        )
+
+        tools_list = [google_search_tool, document_read_tool, read_actions_tool, add_action_tool, remove_action_tool, update_action_tool, vertex_search_tool, octopus_fetch_tool, calculate_roi_tool, industry_guidelines_tool]
 
         return tools_list
 
