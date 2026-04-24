@@ -170,9 +170,8 @@ class FireStoreChat():
             if doc.exists:
                 data = doc.to_dict()
                 return {
-                    "account_number": data.get("octopus_account_num"),
-                    "octopus_secret_name": data.get("octopus_secret_name"),
-                    "provider": data.get("energy_provider", "Octopus")
+                    "account_number": data.get("Octopus_account_num"),
+                    "octopus_secret_name": data.get("Octopus_secret_name")
                 }
             return None
         except Exception as e:
