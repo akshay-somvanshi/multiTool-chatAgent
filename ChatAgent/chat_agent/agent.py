@@ -317,6 +317,127 @@ class agent:
         print(f"[Profiling] TOTAL ainvoke_res took {time.perf_counter() - total_start:.2f}s")
         return response_content
 
+    async def _stream_helper(self, recent_messages):
+        """Async generator that yields SSE formatted chunks from the agent."""
+        text_chunk = None
+
+        try:
+            async for chunk in self.agent.astream({"messages": recent_messages}, stream_mode="messages"):
+                text_chunk = "" # Reset for each chunk to avoid repeating text
+                
+                # Handle Tuple structure: (AIMessage(content='...'), metadata)
+                if isinstance(chunk, tuple) and len(chunk) > 0:
+                    msg = chunk[0]
+                    if hasattr(msg, "content"):
+                        text_chunk = msg.content
+                
+                # Handle dictionary structure {'model': {'messages': [...]}}
+                elif isinstance(chunk, dict) and "model" in chunk:
+                    messages = chunk["model"].get("messages", [])
+                    if messages:
+                        text_chunk = messages[-1].content
+                
+                # Handle raw message chunks directly
+                elif hasattr(chunk, "content"):
+                    text_chunk = chunk.content
+
+                # If we found any text, yield it in SSE format
+                # if text_chunk:
+                #     print("[STREAMING]", text_chunk)
+                #     payload = json.dumps({"message": text_chunk})
+                #     yield f"data: {payload}\n\n"
+                #     # Small sleep to ensure smooth streaming and avoid hitting rate limits too fast
+                #     await asyncio.sleep(0.01)
+
+                if text_chunk:
+                    # Check if the response contains the actual output we want
+                    if '"message":' in text_chunk:
+                        # Extract clean text and UI actions
+                        processed = self._extract_text_content(text_chunk)
+                        
+                        # Yield the clean message
+                        payload = json.dumps({"message": processed["message"]})
+                        yield f"data: {payload}\n\n"
+                        
+                        # If there are UI actions, yield them in a separate chunk
+                        if processed.get("ui_actions"):
+                            ui_payload = json.dumps({"ui_actions": processed["ui_actions"]})
+                            yield f"data: {ui_payload}\n\n"
+
+                        await asyncio.sleep(0.01)
+
+        except Exception as e:
+            print(f"Error in _stream_helper: {e}")
+            yield f"data: {json.dumps({'error': str(e)})}\n\n"
+
+    async def astream_res(self, query: str, user_id: str = None, session_id: str = None):
+        total_start = time.perf_counter()
+        session_id = self._get_daily_session_id(user_id)
+
+        # Initialize Firestore for the current user and session
+        firestore = self._init_FireStore(user_id, session_id)
+        
+        # Set status: Loading history
+        await asyncio.to_thread(firestore.set_status, "history")
+
+        # Check if this is the first message in the session to inject context
+        current_session_history = await asyncio.to_thread(firestore.load_messages)
+        is_new_session = len(current_session_history) == 0
+
+        if is_new_session:
+            await asyncio.to_thread(firestore.set_status, "summary")
+            user_context_task = asyncio.to_thread(firestore.get_user_context)
+            summary_task = self._aget_session_summary(firestore, session_id)
+            user_context, summary = await asyncio.gather(user_context_task, summary_task)
+            
+            write_tasks = []
+            if user_context:
+                write_tasks.append(asyncio.to_thread(firestore.add_system_message, user_context))
+            if summary:
+                write_tasks.append(asyncio.to_thread(firestore.add_system_message, summary))
+            if write_tasks:
+                await asyncio.gather(*write_tasks)
+
+        # Add the current user query to the history
+        await asyncio.to_thread(firestore.add_user_message, query)
+        
+        # Reload history to include newly added messages
+        current_session_history = await asyncio.to_thread(firestore.load_messages)
+        system_messages = [msg for msg in current_session_history if msg.type == 'system']
+        other_messages = [msg for msg in current_session_history if msg.type != 'system']
+        recent_messages = [{"role": msg.type, "content": msg.content} for msg in system_messages] + \
+                        [{"role": msg.type, "content": msg.content} for msg in other_messages[-self.max_messages:]]
+
+        await asyncio.to_thread(firestore.set_status, "agent_thinking")
+
+        # Start streaming
+        full_text_response = ""
+        async for chunk_msg in self._stream_helper(recent_messages):
+            # The chunk_msg is already formatted as "data: {...}\n\n"
+            yield chunk_msg
+            
+            # Extract the raw message to accumulate for Firestore
+            try:
+                # data: {"message": "..."}
+                if chunk_msg.startswith("data: "):
+                    data_json = json.loads(chunk_msg[6:])
+                    if "message" in data_json:
+                        full_text_response += data_json["message"]
+            except:
+                pass
+
+        # Set status: Finishing
+        await asyncio.to_thread(firestore.set_status, "finishing")
+
+        # Final Firestore update with the complete response
+        if full_text_response:
+            # We use _extract_text_content to handle any JSON formatting the model might have used
+            processed_response = self._extract_text_content(full_text_response)
+            db_text = processed_response.get("message", full_text_response)
+            asyncio.create_task(asyncio.to_thread(firestore.add_ai_message, db_text))
+        
+        print(f"[Profiling] TOTAL astream_res took {time.perf_counter() - total_start:.2f}s")
+
     def _get_session_summary(self, firestore: FireStoreChat, session_id: str = None) -> str:
         """ Retrieve all previous sessions for this user and summarise each into a single output"""
         try:

@@ -30,6 +30,47 @@ class classifier():
         today = datetime.now().strftime('%Y%m%d')
         return f"{today}"
 
+    async def astream_res(self, query, user_id=None):
+        start = time.perf_counter()
+        
+        # Set status
+        if user_id:
+            session_id = self._get_daily_session_id(user_id)
+            firestore = FireStoreChat(user_id, session_id)
+            firestore.set_status("classifier")
+
+        prompt = f"""
+        You are a classifier that decides which operational mode to use.
+
+        Modes:
+        1. GENERALIST — basic information, basic research, definitions, general knowledge questions.
+        2. PLANNING — user wants structured sustainability planning, assessments, or a future roadmap.
+        3. ACTION — user wants implementation steps, changing action items, timelines, operational detail.
+
+        User query: "{query}"
+
+        Respond ONLY with one of:
+        GENERALIST
+        PLANNING
+        ACTION
+        """
+        # Using .aio for true async call with google-genai SDK
+        response = await self.client.aio.models.generate_content(
+            model=self.model,
+            contents=prompt
+        )
+        print(f"[Profiling] Classifier ({self.model}) took {time.perf_counter() - start:.2f}s")
+
+        if response.text.strip() == "GENERALIST":
+            async for chunk in self.generalist.astream_res(query, user_id):
+                yield chunk
+        elif response.text.strip() == "PLANNING":
+            async for chunk in self.planning.astream_res(query, user_id):
+                yield chunk
+        else:
+            async for chunk in self.action.astream_res(query, user_id):
+                yield chunk
+
     async def ainvoke(self, query, user_id=None):
         start = time.perf_counter()
         

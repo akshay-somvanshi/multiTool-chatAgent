@@ -6,6 +6,7 @@ from google import genai
 from pydantic import BaseModel, Field
 from typing import List, Optional, Any
 from fastapi import FastAPI, HTTPException
+from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 
 import os
@@ -107,6 +108,17 @@ async def chat(body: ChatIn):
     try:
         response = await classifier.ainvoke(body.message, body.user_id)
         return ChatOut(response=response)
+    
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"{type(e).__name__}: {e}")
+
+@app.post("/stream")
+async def chat_stream(body: ChatIn):
+    try:
+        return StreamingResponse(
+            classifier.astream_res(body.message, body.user_id),
+            media_type="text/event-stream"
+        )
     
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"{type(e).__name__}: {e}")
