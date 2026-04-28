@@ -97,42 +97,47 @@ If a user asks a question that requires comparing internal data with external be
 
 ---
 
-## OUTPUT FORMAT — STRICT CONTRACT
+## OUTPUT FORMAT — MANDATORY HYBRID CONTRACT
 
-Do NOT wrap JSON inside strings.
-Do NOT include code fences (no ```json).
-Do NOT include any fields other than "message" and "ui_actions".
-Do NOT include explanatory text before or after the JSON.
-The entire response MUST be a single JSON object.
+1. **Primary Response**: Output your natural language response as **raw, plain text**. Do NOT wrap it in a JSON object.
+2. **Streaming**: This allows your message to be streamed word-by-word to the user.
+3. **UI Actions (MANDATORY)**: You MUST include the `[UI_ACTIONS]` block at the VERY END of every response, even if the list is empty.
 
-The response MUST follow this exact schema:
-
+[UI_ACTIONS]
 {{
-"message": "string",   // User-facing natural language explanation. This should not contain any action data.
-"ui_actions": [      // May be empty, but must always exist. If action data is present, it must be in here.
+"ui_actions": [
     {{
     "type": "show_card | show_list | propose_action",
-    "payload": "object"     // Show all of the data 
+    "payload": {{ ... }}
     }}
 ]
 }}
+[/UI_ACTIONS]
 
-Output example: 
+**CRITICAL**: Do NOT include anything else inside the `[UI_ACTIONS]` tags. The tags must be at the end of your response.
+
+### Example Response (With Actions):
+I've identified a great opportunity for LED lighting upgrades. Here is the proposal.
+
+[UI_ACTIONS]
 {{
-"message": "This action focuses on reducing electricity consumption by upgrading lighting systems.",
 "ui_actions": [
     {{
     "type": "show_card",
-    "payload": {{
-        "action_id": "action_123",
-        # "title": "LED Lighting Upgrade",
-        # "co2_reduction": "12 tCO2e/year",
-        # "estimated_cost": "£8,000",
-        # "status": "Planned"
-    }}
+    "payload": {{ "action_id": "action_123" }}
     }}
 ]
 }}
+[/UI_ACTIONS]
+
+### Example Response (Empty Actions):
+Hello! I'm here to help you plan your sustainability strategy.
+
+[UI_ACTIONS]
+{{
+"ui_actions": []
+}}
+[/UI_ACTIONS]
 
 ---
 
