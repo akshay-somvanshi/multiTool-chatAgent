@@ -398,13 +398,23 @@ class agent:
         full_text_response = ""
         try:
             async for chunk in self.agent.astream({"messages": recent_messages}, stream_mode="messages"):
-                raw_content = ""
-                if isinstance(chunk, tuple) and len(chunk) > 0:
-                    msg = chunk[0]
-                    if hasattr(msg, "content"):
-                        raw_content = msg.content
-                elif hasattr(chunk, "content"):
-                    raw_content = chunk.content
+                # Identify the message and metadata to filter out Tool messages
+                # LangChain usually yields (Message, Metadata) tuples
+                if isinstance(chunk, tuple) and len(chunk) >= 2:
+                    msg, metadata = chunk
+                    # Filter: Only process chunks from the 'model' node
+                    if metadata.get("langgraph_node") != "model":
+                        continue
+                else:
+                    # Fallback for non-tuple chunks
+                    msg = chunk
+                    if hasattr(msg, "type") and msg.type != "ai":
+                        continue
+
+                if not hasattr(msg, "content"):
+                    continue
+                
+                raw_content = msg.content
                 
                 # If content is a list (e.g. multimodal or with thought signatures), extract text
                 if isinstance(raw_content, list):
