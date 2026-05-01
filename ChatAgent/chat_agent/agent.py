@@ -338,9 +338,14 @@ class agent:
 
                 raise EmptyLLMResponseError()
             
-            except EmptyLLMResponseError as e:
-                if attempt == max_retries-1:
-                    response_content = {"message": "I could not generate a response. Please try again", "ui_actions": []}
+            except Exception as e:
+                print(f"[Warning] Attempt {attempt+1} failed: {e}")
+                # If this was the last attempt, set the final error message
+                if attempt == max_retries - 1:
+                    response_content = {
+                        "message": "I encountered an internal error. Please try again shortly.",
+                        "ui_actions": []
+                    }
         
         # Set status: Finishing
         await asyncio.to_thread(firestore.set_status, "finishing")
@@ -447,14 +452,19 @@ class agent:
                         yield f"data: {json.dumps({'message': raw_content})}\n\n"
         
         except Exception as e:
-            print(f"Streaming error: {e}")
-            yield f"data: {json.dumps({'error': str(e)})}\n\n"
+            print(f"[Error] astream_res failed: {e}")
+            yield f"data: {json.dumps({'message': 'I encountered an error while streaming. Please try again.', 'ui_actions': []})}\n\n"
 
         await asyncio.to_thread(firestore.set_status, "finishing")
 
         # Extract final message and UI actions
         processed = self._extract_text_content(full_text_response)
         
+        # If we reached the end but have NO message content, yield a final error
+        if not processed.get("message") and not full_text_response.strip():
+             yield f"data: {json.dumps({'message': 'I could not generate a response. Please try again.', 'ui_actions': []})}\n\n"
+             return
+
         # 1. Yield UI actions as a final chunk
         yield f"data: {json.dumps({'ui_actions': processed.get('ui_actions', [])})}\n\n"
 
