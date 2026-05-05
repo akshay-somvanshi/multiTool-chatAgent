@@ -25,3 +25,35 @@ class EnergyConsumption(BaseModel):
             "document_type": self.document_type,
             "mpan": self.mpan
         }
+
+class SAPProductOrderItem(BaseModel):
+    """Standardized model for SAP product order item data from any provider."""
+    PurchaseOrder: str
+    PurchaseOrderItem: str
+    PurchaseOrderItemText: str
+    MaterialType: str
+    Material: str
+    MaterialGroup: str
+    CompanyCode: str
+    NetPriceAmount: float
+    NetPriceQuantity: int
+    OrderQuantity: int
+    DocumentCurrency: str
+    CreationDate: str
+
+    def to_metadata(self):
+        """Convert to the flat dictionary format used for GCS blob metadata."""
+        return {
+            "PurchaseOrder": self.PurchaseOrder,
+            "PurchaseOrderItem": self.PurchaseOrderItem,    
+            "PurchaseOrderItemText": self.PurchaseOrderItemText,
+            "MaterialType": self.MaterialType,
+            "Material": self.Material,
+            "MaterialGroup": self.MaterialGroup,
+            "CompanyCode": self.CompanyCode,
+            "NetPriceAmount": str(self.NetPriceAmount),
+            "NetPriceQuantity": str(self.NetPriceQuantity),
+            "OrderQuantity": str(self.OrderQuantity),
+            "Currency": self.DocumentCurrency,
+            "CreationDate": self.CreationDate
+        }
