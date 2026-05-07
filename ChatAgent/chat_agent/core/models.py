@@ -27,19 +27,27 @@ class EnergyConsumption(BaseModel):
         }
 
 class SAPProductOrderItem(BaseModel):
-    """Standardized model for SAP product order item data from any provider."""
+    """Standardized model for SAP product order item data with sustainability enrichment."""
     PurchaseOrder: str
     PurchaseOrderItem: str
     PurchaseOrderItemText: str
     MaterialType: str
     Material: str
+    MaterialName: str = "Unknown Material"  # Enriched
     MaterialGroup: str
+    SupplierCode: str                       # From SAP
+    SupplierName: str = "Unknown Supplier"  # Enriched
     CompanyCode: str
     NetPriceAmount: float
     NetPriceQuantity: int
     OrderQuantity: int
     DocumentCurrency: str
     CreationDate: str
+    
+    # Calculated Fields
+    TotalCost: float = 0.0
+    TotalWeightKG: float = 0.0
+    EstimatedCO2kg: float = 0.0
 
     def to_metadata(self):
         """Convert to the flat dictionary format used for GCS blob metadata."""
@@ -47,13 +55,15 @@ class SAPProductOrderItem(BaseModel):
             "PurchaseOrder": self.PurchaseOrder,
             "PurchaseOrderItem": self.PurchaseOrderItem,    
             "PurchaseOrderItemText": self.PurchaseOrderItemText,
-            "MaterialType": self.MaterialType,
             "Material": self.Material,
-            "MaterialGroup": self.MaterialGroup,
-            "CompanyCode": self.CompanyCode,
+            "MaterialName": self.MaterialName,
+            "SupplierCode": self.SupplierCode,
+            "SupplierName": self.SupplierName,
             "NetPriceAmount": str(self.NetPriceAmount),
-            "NetPriceQuantity": str(self.NetPriceQuantity),
             "OrderQuantity": str(self.OrderQuantity),
             "Currency": self.DocumentCurrency,
+            "TotalCost": f"{self.TotalCost:.2f}",
+            "TotalWeightKG": f"{self.TotalWeightKG:.2f}",
+            "EstimatedCO2kg": f"{self.EstimatedCO2kg:.2f}",
             "CreationDate": self.CreationDate
         }
