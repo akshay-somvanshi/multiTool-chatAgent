@@ -216,6 +216,7 @@ class ToolList:
         self,
         document_url
     ):
+        print(f"[Tool] Starting document_read for: {document_url}", flush=True)
         """
         Reads and extracts text from a document (PDF, TXT, CSV).
         
@@ -362,7 +363,7 @@ class ToolList:
                 "currency": "GBP"
             }
         except Exception as e:
-            print(f"ROI Calculation failed: {e}")
+            print(f"ROI Calculation failed: {e}", flush=True)
             return {"error": str(e)}
 
     def get_industry_guidelines(self, industry_name: str) -> dict:

@@ -156,7 +156,7 @@ class FireStoreChat():
             ) 
             
 
-            print(f"[Profiling] User Context took {time.perf_counter() - start_time:.2f}s")
+            print(f"[Profiling] User Context took {time.perf_counter() - start_time:.2f}s", flush=True)
 
             return context
         except Exception as e:
@@ -256,6 +256,6 @@ class FireStoreChat():
                 "status_key": status_key,
                 "last_status_update": firestore.SERVER_TIMESTAMP
             }, merge=True)
-            print(f"[Firestore] Status updated to: {message}")
+            print(f"[Firestore] Status updated to: {message}", flush=True)
         except Exception as e:
             print(f"Error updating status: {e}")

@@ -326,7 +326,7 @@ class agent:
             try:
                 step_start = time.perf_counter()
                 result = await self.agent.ainvoke({"messages": recent_messages})
-                print(f"[Profiling] LLM Agent (attempt {attempt+1}) took {time.perf_counter() - step_start:.2f}s")
+                print(f"[Profiling] LLM Agent (attempt {attempt+1}) took {time.perf_counter() - step_start:.2f}s", flush=True)
                 
                 if result.get("finish_reason") == "MALFORMED_FUNCTION_CALL":
                     raise RuntimeError("Tool call failed due to malformed arguments")
@@ -364,7 +364,7 @@ class agent:
         else:
             print("Response content is empty, skipping Firestore write")
         
-        print(f"[Profiling] TOTAL ainvoke_res took {time.perf_counter() - total_start:.2f}s")
+        print(f"[Profiling] TOTAL ainvoke_res took {time.perf_counter() - total_start:.2f}s", flush=True)
         return response_content
 
     async def astream_res(self, query: str, user_id: str = None, session_id: str = None):
@@ -437,18 +437,28 @@ class agent:
                         continue
 
                 if isinstance(raw_content, str) and raw_content:
+                    # Update status on the first chunk to indicate we are now receiving the response
+                    if not full_text_response:
+                        asyncio.create_task(asyncio.to_thread(firestore.set_status, "agent_thinking"))
+
                     full_text_response += raw_content
                     
                     if "[UI_ACTIONS]" in full_text_response:
                         tag_start_in_full = full_text_response.find("[UI_ACTIONS]")
                         chars_before_chunk = len(full_text_response) - len(raw_content)
                         
+                        # If the tag starts in this chunk, yield only the text before it
                         if tag_start_in_full >= chars_before_chunk:
                             pre_tag_index = tag_start_in_full - chars_before_chunk
                             pre_tag_text = raw_content[:pre_tag_index]
                             if pre_tag_text:
                                 yield f"data: {json.dumps({'message': pre_tag_text})}\n\n"
+                        # If the tag started in a previous chunk, don't yield anything from this chunk
+                        # (as it's assumed to be inside the [UI_ACTIONS] block)
+                        else:
+                            pass 
                     else:
+                        # No tag yet, yield the whole chunk
                         yield f"data: {json.dumps({'message': raw_content})}\n\n"
         
         except Exception as e:
@@ -472,7 +482,7 @@ class agent:
         if processed.get("message"):
             asyncio.create_task(asyncio.to_thread(firestore.add_ai_message, processed["message"]))
         
-        print(f"[Profiling] TOTAL astream_res took {time.perf_counter() - total_start:.2f}s")
+        print(f"[Profiling] TOTAL astream_res took {time.perf_counter() - total_start:.2f}s", flush=True)
 
     def _get_session_summary(self, firestore: FireStoreChat, session_id: str = None) -> str:
         """ Retrieve all previous sessions for this user and summarise each into a single output"""

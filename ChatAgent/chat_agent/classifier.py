@@ -59,7 +59,7 @@ class classifier():
             model=self.model,
             contents=prompt
         )
-        print(f"[Profiling] Classifier ({self.model}) took {time.perf_counter() - start:.2f}s")
+        print(f"[Profiling] Classifier ({self.model}) took {time.perf_counter() - start:.2f}s", flush=True)
 
         if response.text.strip() == "GENERALIST":
             async for chunk in self.generalist.astream_res(query, user_id):
@@ -100,7 +100,7 @@ class classifier():
             model=self.model,
             contents=prompt
         )
-        print(f"[Profiling] Classifier ({self.model}) took {time.perf_counter() - start:.2f}s")
+        print(f"[Profiling] Classifier ({self.model}) took {time.perf_counter() - start:.2f}s", flush=True)
 
         if response.text.strip() == "GENERALIST":
             return await self.generalist.ainvoke_res(query, user_id)
