@@ -1,4 +1,5 @@
 from langchain_core.tools import tool, Tool, StructuredTool
+from fpdf import FPDF
 from langchain_google_community import GoogleSearchAPIWrapper
 from pydantic import BaseModel, Field
 from google.api_core.client_options import ClientOptions
@@ -93,6 +94,11 @@ class SustainabilityROIInput(BaseModel):
 
 class IndustryInfoInput(BaseModel):
     industry_name: str = Field(description="The name of the industry to look up guidelines for (e.g., 'Retail', 'Manufacturing')")
+
+class PDFGeneratorInput(BaseModel):
+    title: str = Field(description="The title of the report")
+    content: str = Field(description="The text content of the report. Use \n for new lines.")
+    user_id: str = Field(description="The user ID to associate the report with")
 
 class ToolList:
     def __init__(self):
@@ -659,8 +665,55 @@ class ToolList:
             return summary
 
         except Exception as e:
-            print(f"[Tool] Failed to get report from Octopus Energy: {str(e)}")
+            print(f"[Tool] Failed to get report from Octopus Energy: {str(e)}", flush=True)
             return f"Error fetching from Octopus: {str(e)}"
+
+    def _generate_pdf_report(self, title: str, content: str, user_id: str) -> str:
+        """
+        Generates a PDF report, uploads it to GCS, and returns the URL.
+        """
+        try:
+            print(f"[Tool] Generating PDF report for user: {user_id}", flush=True)
+            pdf = FPDF()
+            pdf.add_page()
+            
+            # Title
+            pdf.set_font("helvetica", "B", 16)
+            pdf.cell(0, 10, title, new_x="LMARGIN", new_y="NEXT", align="C")
+            pdf.ln(10)
+            
+            # Content
+            pdf.set_font("helvetica", "", 12)
+            # Replace unsupported characters to avoid FPDF errors
+            clean_content = content.encode('latin-1', 'replace').decode('latin-1')
+            pdf.multi_cell(0, 10, clean_content)
+            
+            # Temporary file
+            filename = f"report_{user_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf"
+            temp_path = f"/tmp/{filename}"
+            pdf.output(temp_path)
+            
+            # Upload to GCS
+            bucket_name = f"{self.project_id}.firebasestorage.app"
+            storage_client = storage.Client(project=self.project_id)
+            bucket = storage_client.bucket(bucket_name)
+            blob = bucket.blob(f"users/{user_id}/reports/{filename}")
+            
+            blob.upload_from_filename(temp_path)
+            
+            # Construct the public URL
+            url = f"https://storage.googleapis.com/{bucket_name}/users/{user_id}/reports/{filename}"
+            
+            # Cleanup
+            if os.path.exists(temp_path):
+                os.remove(temp_path)
+            
+            print(f"[Tool] PDF report generated and uploaded: {url}", flush=True)
+            return f"PDF report generated successfully. Download link: {url}"
+            
+        except Exception as e:
+            print(f"Error generating PDF: {e}", flush=True)
+            return f"Failed to generate PDF: {str(e)}"
 
     def get_tools(self) -> list[Tool]:
         google_search_tool = Tool(
@@ -747,7 +800,17 @@ class ToolList:
             func=self.get_industry_guidelines
         )
 
-        tools_list = [google_search_tool, document_read_tool, read_actions_tool, add_action_tool, remove_action_tool, update_action_tool, vertex_search_tool, octopus_fetch_tool, calculate_roi_tool, industry_guidelines_tool]
+        generate_pdf_tool = StructuredTool(
+            name="generate_pdf_report",
+            description="""
+            Generates a professional PDF report from text content. 
+            Use this when the user specifically asks for a PDF version of a summary, report, or analysis.
+            """,
+            args_schema=PDFGeneratorInput,
+            func=self._generate_pdf_report
+        )
+
+        tools_list = [google_search_tool, document_read_tool, read_actions_tool, add_action_tool, remove_action_tool, update_action_tool, vertex_search_tool, octopus_fetch_tool, calculate_roi_tool, industry_guidelines_tool, generate_pdf_tool]
 
         return tools_list
 

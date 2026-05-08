@@ -13,3 +13,4 @@ uvicorn
 python-dotenv
 psutil
 google-cloud-bigquery
+fpdf2
