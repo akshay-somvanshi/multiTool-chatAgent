@@ -8,11 +8,12 @@ A conversational AI agent built with Langchain and Google Vertex AI, designed to
 
 *   **Conversational AI Core:** Powered by Google Vertex AI's Generative AI models (Gemini 3.1 Flash & 3.1 Pro), enabling fluid and dynamic interactions.
 *   **Real-Time Status Updates:** Provides context-aware feedback via a Firestore side-channel, keeping users engaged while the agent "thinks."
-*   **Intelligent Intent Classification:** Automatically routes queries to specialized planning, action, or generalist agents.
 *   **Dynamic Model Selection:** Optimizes performance by switching between Flash and Pro models based on conversation complexity.
-*   **Background Intelligence:** Generates tailored follow-up suggestions asynchronously to predict user needs without performance hits.
 *   **Hybrid Energy Data Strategy:** Implements a hybrid retrieval layer. Historical data is ingested into RAG (Vertex AI Search), while real-time data is fetched directly via the Octopus Energy API.
 *   **Automated Ingestion Pipeline:** A GCS-to-BigQuery pipeline triggered by Eventarc. Supports OCR via Document AI and semantic extraction via Gemini 3.1.
+*   **Intelligent Streaming & Tag Filtering:** Implements a specialized streaming loop with a "Lookahead" buffer that hides internal tags from the user's view in real-time.
+*   **SAP ERP Integration:** Capability to pull Purchase Orders from SAP S/4HANA with enriched metadata, including material mapping, supplier names, and automated cost/weight calculations.
+*   **Robust Error Handling & Retries:** Feature-rich fallback mechanisms and automated retries in non-streaming modes to ensure high availability even during transient LLM or API failures.
 *   **Google Search & Vertex AI Search Integration:** Combines real-time web data with internal knowledge base retrieval.
 *   **Document AI Integration:** Seamlessly processes PDF, TXT, and CSV documents to extract and analyze structured sustainability data.
 *   **Persistent Context:** Uses Firestore for long-term memory, session management, and cross-session summaries.
@@ -93,15 +94,18 @@ The application will be accessible at `http://127.0.0.1:8000`.
 ```
 ChatAgent/
 ├── chat_agent/           # Main application package
-│   ├── core/             # Core logic, Pydantic models, and Octopus Client
+│   ├── core/             # Core logic, Pydantic models, Octopus & SAP Clients
+│   │   ├── models.py     # Shared Pydantic data models
+│   │   ├── octopus.py    # Octopus Energy API integration
+│   │   └── sap.py        # SAP S/4HANA ERP integration & enrichment
 │   ├── data/             # Planning questions and data files
 │   ├── prompts/          # System instructions and mode-specific prompts
 │   ├── __init__.py
-│   ├── agent.py          # Core Langchain agent logic
+│   ├── agent.py          # Core Langchain agent logic (ainvoke_res, astream_res)
 │   ├── app.py            # FastAPI application definition
 │   ├── classifier.py     # Intent classification logic
 │   ├── firestore.py      # Firestore integration and session management
-│   └── tools.py          # Tool definitions (Search, Octopus, Document AI)
+│   └── tools.py          # Tool definitions (Search, Octopus, SAP, Document AI)
 ├── scripts/              # Infrastructure and Data Sync scripts
 │   ├── ingestion_pipeline.py # Eventarc-triggered Cloud Run ingestion service
 │   └── octopus_sync.py       # Historical energy data sync script
