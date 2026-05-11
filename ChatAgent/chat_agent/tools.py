@@ -100,6 +100,15 @@ class PDFGeneratorInput(BaseModel):
     content: str = Field(description="The text content of the report. Use \n for new lines.")
     user_id: str = Field(description="The user ID to associate the report with")
 
+class CarbonCalculationInput(BaseModel):
+    activity_name: str = Field(description="The name of the activity (e.g., 'Electricity', 'Petrol', 'Natural Gas', 'Short-haul Flight')")
+    amount: float = Field(description="The numerical value of the activity (e.g., 500)")
+    unit: str = Field(description="The unit for the activity (e.g., 'kWh', 'litres', 'passenger-km', 'tonnes')")
+
+class BulkReadinessInput(BaseModel):
+    gcs_uri: str = Field(description="The GCS URI (folder) to check for documents (e.g., gs://bucket/user/uploads/)")
+    expected_categories: list[str] = Field(default=[], description="Optional list of categories the user expects to find (e.g. ['Electricity', 'Fuel'])")
+
 class ToolList:
     def __init__(self):
         self.search_wrapper = GoogleSearchAPIWrapper()
@@ -708,12 +717,139 @@ class ToolList:
             if os.path.exists(temp_path):
                 os.remove(temp_path)
             
-            print(f"[Tool] PDF report generated and uploaded: {url}", flush=True)
-            return f"PDF report generated successfully. Download link: {url}"
+            print(f"[Tool] PDF report generated and uploaded.", flush=True)
+            return f"PDF report generated successfully. You can access it in the Knowledge page."
             
+            print(f"Error generating PDF: {e}", flush=True)
+            return f"Failed to generate PDF. Please try again."
+
         except Exception as e:
             print(f"Error generating PDF: {e}", flush=True)
-            return f"Failed to generate PDF: {str(e)}"
+            return f"Failed to generate PDF. Please try again."
+
+    def _calculate_carbon_footprint(self, activity_name: str, amount: float, unit: str) -> dict:
+        """
+        Calculates carbon emissions (kgCO2e) by querying the BigQuery emission factors table.
+        """
+        try:
+            print(f"[Tool] Calculating carbon footprint for: {activity_name} ({amount} {unit})", flush=True)
+            dataset_id = "dash_beta_database"
+            table_id = "emission_factors"
+            
+            query = f"""
+                SELECT factor, scope, category, region 
+                FROM `{self.project_id}.{dataset_id}.{table_id}` 
+                WHERE LOWER(activity_name) = @activity 
+                AND LOWER(unit) = @unit
+                ORDER BY year DESC
+                LIMIT 1
+            """
+            job_config = bigquery.QueryJobConfig(
+                query_parameters=[
+                    bigquery.ScalarQueryParameter("activity", "STRING", activity_name.lower()),
+                    bigquery.ScalarQueryParameter("unit", "STRING", unit.lower())
+                ]
+            )
+            
+            query_job = self.bq_client.query(query, job_config=job_config)
+            results = list(query_job.result())
+
+            if not results:
+                return {
+                    "error": f"No emission factor found for '{activity_name}' in '{unit}'. Try using different keywords or checking available units (e.g., kWh, litres, tonnes, passenger-km)."
+                }
+
+            row = results[0]
+            emissions = amount * row.factor
+
+            return {
+                "activity": activity_name,
+                "amount": amount,
+                "unit": unit,
+                "emissions_kgCO2e": round(emissions, 3),
+                "scope": f"Scope {row.scope}",
+                "category": row.category,
+                "region": row.region,
+                "note": "Calculated using open-source conversion factors (DEFRA/EPA)."
+            }
+
+        except Exception as e:
+            print(f"Error calculating carbon footprint: {e}", flush=True)
+            return {"error": str(e)}
+
+
+    def _check_bulk_readiness(self, gcs_uri: str, expected_categories: list[str] = []) -> dict:
+        """
+        Scans a GCS folder to check if all necessary documents are available before bulk processing.
+        """
+        try:
+            print(f"[Tool] Checking bulk readiness for: {gcs_uri}", flush=True)
+            
+            # Parse GCS URI
+            if not gcs_uri.startswith("gs://"):
+                return {"error": "Invalid URI. Must start with gs://"}
+            
+            parts = gcs_uri.replace("gs://", "").split("/", 1)
+            bucket_name = parts[0]
+            prefix = parts[1] if len(parts) > 1 else ""
+            
+            storage_client = storage.Client(project=self.project_id)
+            bucket = storage_client.bucket(bucket_name)
+            # List blobs with the given prefix
+            blobs = list(bucket.list_blobs(prefix=prefix))
+            
+            if not blobs:
+                return {"error": "No files found in the specified GCS path."}
+            
+            file_summary = []
+            categories_found = set()
+            
+            for blob in blobs:
+                # Basic check to skip folders (some GCS providers create empty objects ending in /)
+                if blob.name.endswith("/"): continue 
+                
+                filename = blob.name.split("/")[-1]
+                if not filename: continue # Skip if it's just the prefix
+                
+                size_kb = blob.size / 1024
+                
+                # Simple keyword matching for categories from filename
+                category = "Other"
+                keywords = {
+                    "Electricity": ["elec", "bill", "utility", "power", "enel", "octopus"],
+                    "Fuel": ["fuel", "petrol", "diesel", "gasoline", "gas station"],
+                    "Travel": ["flight", "hotel", "travel", "train", "airline", "booking"],
+                    "Water": ["water", "sewage"],
+                    "Waste": ["waste", "recycling", "trash"]
+                }
+                
+                for cat, keys in keywords.items():
+                    if any(k in filename.lower() for k in keys):
+                        category = cat
+                        categories_found.add(cat)
+                        break
+                
+                file_summary.append({
+                    "filename": filename,
+                    "category_guess": category,
+                    "size_kb": round(size_kb, 2),
+                    "last_modified": blob.updated.strftime("%Y-%m-%d")
+                })
+            
+            missing_categories = [cat for cat in expected_categories if cat.lower() not in [c.lower() for c in categories_found]]
+            
+            return {
+                "total_files": len(file_summary),
+                "categories_detected": list(categories_found),
+                "missing_expected_categories": missing_categories,
+                "file_list": file_summary[:20], # Return a snippet for the agent
+                "ready_to_process": len(missing_categories) == 0,
+                "message": "Folder check complete."
+            }
+
+        except Exception as e:
+            print(f"Error checking bulk readiness: {e}", flush=True)
+            return {"error": str(e)}
 
     def get_tools(self) -> list[Tool]:
         google_search_tool = Tool(
@@ -810,7 +946,29 @@ class ToolList:
             func=self._generate_pdf_report
         )
 
-        tools_list = [google_search_tool, document_read_tool, read_actions_tool, add_action_tool, remove_action_tool, update_action_tool, vertex_search_tool, octopus_fetch_tool, calculate_roi_tool, industry_guidelines_tool, generate_pdf_tool]
+        calculate_carbon_tool = StructuredTool(
+            name="calculate_carbon_footprint",
+            description="""
+            Calculates carbon emissions (kgCO2e) based on activity data. 
+            Covers Scope 1 (fuel), Scope 2 (electricity), and Scope 3 (travel, water, waste).
+            Always ask for activity type (e.g. Electricity), amount (e.g. 500) and unit (e.g. kWh).
+            """,
+            args_schema=CarbonCalculationInput,
+            func=self._calculate_carbon_footprint
+        )
+
+        check_readiness_tool = StructuredTool(
+            name="check_bulk_readiness",
+            description="""
+            Checks a GCS folder for documents before starting a bulk sustainability analysis. 
+            Identifies file types and detects categories (Electricity, Fuel, Travel, etc.) from filenames.
+            Use this to confirm with the user that all data is present before starting a long process.
+            """,
+            args_schema=BulkReadinessInput,
+            func=self._check_bulk_readiness
+        )
+
+        tools_list = [google_search_tool, document_read_tool, read_actions_tool, add_action_tool, remove_action_tool, update_action_tool, vertex_search_tool, octopus_fetch_tool, calculate_roi_tool, industry_guidelines_tool, generate_pdf_tool, calculate_carbon_tool, check_readiness_tool]
 
         return tools_list
 

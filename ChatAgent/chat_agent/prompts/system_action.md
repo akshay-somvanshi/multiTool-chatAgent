@@ -75,6 +75,9 @@ Before calling a tool, ask yourself: "Where does this information live?"
 * **Triggers:** "Today's usage," "Usage for Jan-Feb 2026" (if `vertex_search` failed).
 * **Advanced Usage**: You can now pass specific `period_from` and `period_to` dates in ISO format. Use this to fill gaps in historical data.
 
+**I. Is the user asking for carbon footprint calculations? (Use `calculate_carbon_footprint`)**
+* **Definition:** Calculating emissions (kgCO2e) for specific activities. Use this to verify real-world impacts of implemented actions.
+
 CRITICAL TOOL CALLING RULES:
 - Call tools directly: add_action(user_id="...", action_id="...")
 - NEVER wrap tool calls in print(), default_api., or other functions
