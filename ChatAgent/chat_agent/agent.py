@@ -148,21 +148,66 @@ class agent:
         else:
             raw_string = str(content)
 
-        # Attempt to extract and parse JSON from the raw_string
-        # This regex finds the first '{' and the last '}'
-        json_match = re.search(r'(\{.*\})', raw_string, re.DOTALL)
-        
-        if json_match:
-            try:
-                return json.loads(json_match.group(1))
-            except json.JSONDecodeError:
-                # If it looks like JSON but is broken, return as a message
-                pass
+    def _extract_text_content(self, content: any) -> dict:
+        """Extracts text and UI actions from the model's response."""
+        if not content:
+            return {"message": "", "ui_actions": []}
 
-        # Fallback: If no JSON is found, return the text in the required schema
+        # Robust content handling: Extract text from lists/blocks if needed
+        if isinstance(content, list):
+            text_parts = []
+            for block in content:
+                if isinstance(block, str):
+                    text_parts.append(block)
+                elif isinstance(block, dict) and block.get("type") == "text":
+                    text_parts.append(block.get("text", ""))
+            raw_string = "".join(text_parts)
+        else:
+            raw_string = str(content)
+
+        # Look for the new [UI_ACTIONS] tags
+        ui_actions_match = re.search(r'\[UI_ACTIONS\](.*?)\[/UI_ACTIONS\]', raw_string, re.DOTALL)
+        ui_actions = []
+        clean_message = raw_string
+
+        if ui_actions_match:
+            json_str = ui_actions_match.group(1).strip()
+            # Remove the [UI_ACTIONS] block from the clean message
+            clean_message = raw_string.replace(ui_actions_match.group(0), "").strip()
+            try:
+                # Try standard JSON first
+                data = json.loads(json_str)
+                ui_actions = data.get("ui_actions", [])
+            except json.JSONDecodeError:
+                try:
+                    # Fallback: Replace single quotes with double quotes (common LLM error)
+                    fixed_json = json_str.replace("'", '"')
+                    data = json.loads(fixed_json)
+                    ui_actions = data.get("ui_actions", [])
+                except Exception:
+                    print(f"Error decoding UI actions JSON: {json_str}")
+
+        # Fallback for legacy whole-JSON responses
+        elif raw_string.strip().startswith("{") and raw_string.strip().endswith("}"):
+            try:
+                data = json.loads(raw_string)
+                return {
+                    "message": data.get("message", ""),
+                    "ui_actions": data.get("ui_actions", [])
+                }
+            except json.JSONDecodeError:
+                try:
+                    data = json.loads(raw_string.replace("'", '"'))
+                    return {
+                        "message": data.get("message", ""),
+                        "ui_actions": data.get("ui_actions", [])
+                    }
+                except Exception:
+                    pass
+
         return {
-            "message": raw_string,
-            "ui_actions": []
+            "message": clean_message,
+            "ui_actions": ui_actions
         }
     
     def _get_daily_session_id(self, user_id: str) -> str:
@@ -281,7 +326,7 @@ class agent:
             try:
                 step_start = time.perf_counter()
                 result = await self.agent.ainvoke({"messages": recent_messages})
-                print(f"[Profiling] LLM Agent (attempt {attempt+1}) took {time.perf_counter() - step_start:.2f}s")
+                print(f"[Profiling] LLM Agent (attempt {attempt+1}) took {time.perf_counter() - step_start:.2f}s", flush=True)
                 
                 if result.get("finish_reason") == "MALFORMED_FUNCTION_CALL":
                     raise RuntimeError("Tool call failed due to malformed arguments")
@@ -293,9 +338,14 @@ class agent:
 
                 raise EmptyLLMResponseError()
             
-            except EmptyLLMResponseError as e:
-                if attempt == max_retries-1:
-                    response_content = {"message": "I could not generate a response. Please try again", "ui_actions": []}
+            except Exception as e:
+                print(f"[Warning] Attempt {attempt+1} failed: {e}")
+                # If this was the last attempt, set the final error message
+                if attempt == max_retries - 1:
+                    response_content = {
+                        "message": "I encountered an internal error. Please try again shortly.",
+                        "ui_actions": []
+                    }
         
         # Set status: Finishing
         await asyncio.to_thread(firestore.set_status, "finishing")
@@ -314,8 +364,125 @@ class agent:
         else:
             print("Response content is empty, skipping Firestore write")
         
-        print(f"[Profiling] TOTAL ainvoke_res took {time.perf_counter() - total_start:.2f}s")
+        print(f"[Profiling] TOTAL ainvoke_res took {time.perf_counter() - total_start:.2f}s", flush=True)
         return response_content
+
+    async def astream_res(self, query: str, user_id: str = None, session_id: str = None):
+        total_start = time.perf_counter()
+        session_id = self._get_daily_session_id(user_id)
+
+        # Initialize Firestore
+        firestore = self._init_FireStore(user_id, session_id)
+        await asyncio.to_thread(firestore.set_status, "history")
+
+        # Load context/history
+        current_session_history = await asyncio.to_thread(firestore.load_messages)
+        is_new_session = len(current_session_history) == 0
+
+        if is_new_session:
+            await asyncio.to_thread(firestore.set_status, "summary")
+            user_context, summary = await asyncio.gather(
+                asyncio.to_thread(firestore.get_user_context),
+                self._aget_session_summary(firestore, session_id)
+            )
+            write_tasks = []
+            if user_context: write_tasks.append(asyncio.to_thread(firestore.add_system_message, user_context))
+            if summary: write_tasks.append(asyncio.to_thread(firestore.add_system_message, summary))
+            if write_tasks: await asyncio.gather(*write_tasks)
+
+        await asyncio.to_thread(firestore.add_user_message, query)
+        current_session_history = await asyncio.to_thread(firestore.load_messages)
+        system_messages = [msg for msg in current_session_history if msg.type == 'system']
+        other_messages = [msg for msg in current_session_history if msg.type != 'system']
+        recent_messages = [{"role": msg.type, "content": msg.content} for msg in system_messages] + \
+                        [{"role": msg.type, "content": msg.content} for msg in other_messages[-self.max_messages:]]
+
+        await asyncio.to_thread(firestore.set_status, "agent_thinking")
+
+        # Start streaming and collect full response
+        full_text_response = ""
+        try:
+            async for chunk in self.agent.astream({"messages": recent_messages}, stream_mode="messages"):
+                # Identify the message and metadata to filter out Tool messages
+                # LangChain usually yields (Message, Metadata) tuples
+                if isinstance(chunk, tuple) and len(chunk) >= 2:
+                    msg, metadata = chunk
+                    # Filter: Only process chunks from the 'model' node
+                    if metadata.get("langgraph_node") != "model":
+                        continue
+                else:
+                    # Fallback for non-tuple chunks
+                    msg = chunk
+                    if hasattr(msg, "type") and msg.type != "ai":
+                        continue
+
+                if not hasattr(msg, "content"):
+                    continue
+                
+                raw_content = msg.content
+                
+                # If content is a list (e.g. multimodal or with thought signatures), extract text
+                if isinstance(raw_content, list):
+                    text_parts = []
+                    for part in raw_content:
+                        if isinstance(part, str):
+                            text_parts.append(part)
+                        elif isinstance(part, dict) and part.get("type") == "text":
+                            text_parts.append(part.get("text", ""))
+                    if text_parts:
+                        raw_content = "".join(text_parts)
+                    else:
+                        # If no text parts found (just internal metadata), skip adding to the final message
+                        pass
+                        continue
+
+                if isinstance(raw_content, str) and raw_content:
+                    # Update status on the first chunk to indicate we are now receiving the response
+                    if not full_text_response:
+                        asyncio.create_task(asyncio.to_thread(firestore.set_status, "agent_thinking"))
+
+                    full_text_response += raw_content
+                    
+                    if "[UI_ACTIONS]" in full_text_response:
+                        tag_start_in_full = full_text_response.find("[UI_ACTIONS]")
+                        chars_before_chunk = len(full_text_response) - len(raw_content)
+                        
+                        # If the tag starts in this chunk, yield only the text before it
+                        if tag_start_in_full >= chars_before_chunk:
+                            pre_tag_index = tag_start_in_full - chars_before_chunk
+                            pre_tag_text = raw_content[:pre_tag_index]
+                            if pre_tag_text:
+                                yield f"data: {json.dumps({'message': pre_tag_text})}\n\n"
+                        # If the tag started in a previous chunk, don't yield anything from this chunk
+                        # (as it's assumed to be inside the [UI_ACTIONS] block)
+                        else:
+                            pass 
+                    else:
+                        # No tag yet, yield the whole chunk
+                        yield f"data: {json.dumps({'message': raw_content})}\n\n"
+        
+        except Exception as e:
+            print(f"[Error] astream_res failed: {e}")
+            yield f"data: {json.dumps({'message': 'I encountered an error while streaming. Please try again.', 'ui_actions': []})}\n\n"
+
+        await asyncio.to_thread(firestore.set_status, "finishing")
+
+        # Extract final message and UI actions
+        processed = self._extract_text_content(full_text_response)
+        
+        # If we reached the end but have NO message content, yield a final error
+        if not processed.get("message") and not full_text_response.strip():
+             yield f"data: {json.dumps({'message': 'I could not generate a response. Please try again.', 'ui_actions': []})}\n\n"
+             return
+
+        # 1. Yield UI actions as a final chunk
+        yield f"data: {json.dumps({'ui_actions': processed.get('ui_actions', [])})}\n\n"
+
+        # 2. Save complete message to Firestore
+        if processed.get("message"):
+            asyncio.create_task(asyncio.to_thread(firestore.add_ai_message, processed["message"]))
+        
+        print(f"[Profiling] TOTAL astream_res took {time.perf_counter() - total_start:.2f}s", flush=True)
 
     def _get_session_summary(self, firestore: FireStoreChat, session_id: str = None) -> str:
         """ Retrieve all previous sessions for this user and summarise each into a single output"""

@@ -156,7 +156,7 @@ class FireStoreChat():
             ) 
             
 
-            print(f"[Profiling] User Context took {time.perf_counter() - start_time:.2f}s")
+            print(f"[Profiling] User Context took {time.perf_counter() - start_time:.2f}s", flush=True)
 
             return context
         except Exception as e:
@@ -170,14 +170,40 @@ class FireStoreChat():
             if doc.exists:
                 data = doc.to_dict()
                 return {
-                    "account_number": data.get("octopus_account_num"),
-                    "octopus_secret_name": data.get("octopus_secret_name"),
-                    "provider": data.get("energy_provider", "Octopus")
+                    "account_number": data.get("Octopus_account_num"),
+                    "octopus_secret_name": data.get("Octopus_secret_name")
                 }
             return None
         except Exception as e:
             print(f"Error fetching energy settings: {e}")
             return None
+
+    def get_roi_probabilities(self):
+        """Fetch ROI probabilities from the global config or user overrides."""
+        defaults = {
+            "p1_new_revenue": 0.8,
+            "p2_retained_revenue": 0.7,
+            "p3_ops_cost_reduction": 1.0,
+            "p4_risk_minimized": 0.5,
+            "p5_ops_cost_reduction_5y": 0.9,
+            "p6_financing_cost_diff": 1.0
+        }
+        try:
+            # Get global config
+            config_ref = db.collection("config").document("sustainability_roi")
+            config_doc = config_ref.get()
+            
+            if config_doc.exists:
+                config_data = config_doc.to_dict()
+                # Merge defaults with config
+                for k, v in config_data.items():
+                    if k in defaults:
+                        defaults[k] = v
+            
+            return defaults
+        except Exception as e:
+            print(f"Error fetching ROI probabilities: {e}")
+            return defaults
 
     def set_status(self, status_key):
         """Update the session document with a witty status message."""
@@ -230,6 +256,6 @@ class FireStoreChat():
                 "status_key": status_key,
                 "last_status_update": firestore.SERVER_TIMESTAMP
             }, merge=True)
-            print(f"[Firestore] Status updated to: {message}")
+            print(f"[Firestore] Status updated to: {message}", flush=True)
         except Exception as e:
             print(f"Error updating status: {e}")
