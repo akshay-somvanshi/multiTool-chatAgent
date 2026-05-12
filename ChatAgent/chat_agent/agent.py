@@ -401,6 +401,10 @@ class agent:
 
         # Start streaming and collect full response
         full_text_response = ""
+        stream_buffer = ""
+        tag = "[UI_ACTIONS]"
+        tag_detected = False
+
         try:
             async for chunk in self.agent.astream({"messages": recent_messages}, stream_mode="messages"):
                 # Identify the message and metadata to filter out Tool messages
@@ -437,29 +441,38 @@ class agent:
                         continue
 
                 if isinstance(raw_content, str) and raw_content:
-                    # Update status on the first chunk to indicate we are now receiving the response
+                    # Update status on the first chunk
                     if not full_text_response:
                         asyncio.create_task(asyncio.to_thread(firestore.set_status, "agent_thinking"))
 
                     full_text_response += raw_content
                     
-                    if "[UI_ACTIONS]" in full_text_response:
-                        tag_start_in_full = full_text_response.find("[UI_ACTIONS]")
-                        chars_before_chunk = len(full_text_response) - len(raw_content)
+                    if not tag_detected:
+                        stream_buffer += raw_content
                         
-                        # If the tag starts in this chunk, yield only the text before it
-                        if tag_start_in_full >= chars_before_chunk:
-                            pre_tag_index = tag_start_in_full - chars_before_chunk
-                            pre_tag_text = raw_content[:pre_tag_index]
+                        if tag in stream_buffer:
+                            tag_detected = True
+                            pre_tag_text = stream_buffer.split(tag)[0]
                             if pre_tag_text:
                                 yield f"data: {json.dumps({'message': pre_tag_text})}\n\n"
-                        # If the tag started in a previous chunk, don't yield anything from this chunk
-                        # (as it's assumed to be inside the [UI_ACTIONS] block)
+                            stream_buffer = "" 
                         else:
-                            pass 
-                    else:
-                        # No tag yet, yield the whole chunk
-                        yield f"data: {json.dumps({'message': raw_content})}\n\n"
+                            # Check for partial matches at the end of the buffer
+                            overlap_found = False
+                            for i in range(len(tag) - 1, 0, -1):
+                                if stream_buffer.endswith(tag[:i]):
+                                    text_to_yield = stream_buffer[:-i]
+                                    if text_to_yield:
+                                        yield f"data: {json.dumps({'message': text_to_yield})}\n\n"
+                                    stream_buffer = stream_buffer[-i:]
+                                    overlap_found = True
+                                    break
+                            
+                            if not overlap_found:
+                                if stream_buffer:
+                                    yield f"data: {json.dumps({'message': stream_buffer})}\n\n"
+                                stream_buffer = ""
+
         
         except Exception as e:
             print(f"[Error] astream_res failed: {e}")
