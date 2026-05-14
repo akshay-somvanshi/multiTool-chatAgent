@@ -1,4 +1,5 @@
 from langchain_core.tools import tool, Tool, StructuredTool
+from google import genai
 from fpdf import FPDF
 from langchain_google_community import GoogleSearchAPIWrapper
 from pydantic import BaseModel, Field
@@ -9,10 +10,12 @@ import os
 import dotenv
 import requests
 import google
-from urllib.parse import urlparse, parse_qs
+from urllib.parse import urlparse, parse_qs, unquote
 from google.cloud import storage
 from google.cloud import bigquery
 from datetime import datetime
+import pandas as pd
+import io
 
 from chat_agent.api_client import api_client
 from chat_agent.core.exceptions import APIError
@@ -96,9 +99,11 @@ class IndustryInfoInput(BaseModel):
     industry_name: str = Field(description="The name of the industry to look up guidelines for (e.g., 'Retail', 'Manufacturing')")
 
 class PDFGeneratorInput(BaseModel):
-    title: str = Field(description="The title of the report")
+    title: str = Field(description="The title shown inside the report")
     content: str = Field(description="The text content of the report. Use \n for new lines.")
     user_id: str = Field(description="The user ID to associate the report with")
+    company_name: str = Field(description="The name of the company (used for filename)")
+    report_type: str = Field(description="The type of report, e.g. 'Sustainability plan', 'CDP document' (used for filename)")
 
 class CarbonCalculationInput(BaseModel):
     activity_name: str = Field(description="The name of the activity (e.g., 'Electricity', 'Petrol', 'Natural Gas', 'Short-haul Flight')")
@@ -106,8 +111,12 @@ class CarbonCalculationInput(BaseModel):
     unit: str = Field(description="The unit for the activity (e.g., 'kWh', 'litres', 'passenger-km', 'tonnes')")
 
 class BulkReadinessInput(BaseModel):
-    gcs_uri: str = Field(description="The GCS URI (folder) to check for documents (e.g., gs://bucket/user/uploads/)")
+    gcs_uri: str = Field(description="The Gcs URI (folder) to check for documents (e.g., gs://bucket/user/uploads/)")
     expected_categories: list[str] = Field(default=[], description="Optional list of categories the user expects to find (e.g. ['Electricity', 'Fuel'])")
+
+class BulkProcessInput(BaseModel):
+    gcs_uri: str = Field(description="The GCS URI (folder) to process documents from")
+    user_id: str = Field(description="The user ID to associate results with")
 
 class ToolList:
     def __init__(self):
@@ -137,6 +146,11 @@ class ToolList:
         )
         self.discovery_engine_client = discoveryengine.ConversationalSearchServiceClient(client_options=client_options) 
         self.bq_client = bigquery.Client(project=self.project_id)
+        self.genai_client = genai.Client(
+            vertexai=True,
+            project=self.project_id,
+            location="global"
+        )
 
     def _logged_search(
         self,
@@ -193,6 +207,8 @@ class ToolList:
                 else:
                     raise ValueError(f"Unsupported GCS URL format: {url}")
 
+            # Decode URL-encoded characters in the blob path (like %20 for spaces)
+            blob_path = unquote(blob_path)
             print(f"Downloading from GCS: bucket={bucket_name}, path={blob_path}", flush=True)
             
             storage_client = storage.Client(project=self.project_id)
@@ -200,10 +216,12 @@ class ToolList:
             blob = bucket.blob(blob_path)
             
             # Simple text vs bytes logic
+            # .xlsx is a binary format, MUST be bytes
             if blob_path.lower().endswith('.txt') or blob_path.lower().endswith('.csv'):
                 print(f"Downloading {blob_path} as text", flush=True)
                 content = blob.download_as_text()
             else:
+                print(f"Downloading {blob_path} as bytes", flush=True)
                 content = blob.download_as_bytes()
             
             return content
@@ -255,10 +273,23 @@ class ToolList:
                 if any(ext in document_url.lower() for ext in ['.txt', '.csv']):
                     print(f"Skipping Document AI for text-based file", flush=True)
                     return self._download_from_gcs(document_url)
+                elif '.xlsx' in document_url.lower():
+                    print(f"Reading Excel file for text extraction", flush=True)
+                    content = self._download_from_gcs(document_url)
+                    df = pd.read_excel(io.BytesIO(content))
+                    return df.to_csv(index=False)
                 else:
                     image_content = self._download_from_gcs(document_url)
             elif document_url.startswith("http://") or document_url.startswith("https://"):
                 print(f"Downloading file via HTTP", flush=True)
+                # Handle direct Excel/CSV over HTTP as well
+                if any(ext in document_url.lower() for ext in ['.txt', '.csv']):
+                    return self._download_from_http(document_url).decode('utf-8', errors='replace')
+                elif '.xlsx' in document_url.lower():
+                    content = self._download_from_http(document_url)
+                    df = pd.read_excel(io.BytesIO(content))
+                    return df.to_csv(index=False)
+                
                 image_content = self._download_from_http(document_url)
             else:
                 if not os.path.exists(document_url):
@@ -677,12 +708,13 @@ class ToolList:
             print(f"[Tool] Failed to get report from Octopus Energy: {str(e)}", flush=True)
             return f"Error fetching from Octopus: {str(e)}"
 
-    def _generate_pdf_report(self, title: str, content: str, user_id: str) -> str:
+    def _generate_pdf_report(self, title: str, content: str, user_id: str, company_name: str, report_type: str) -> str:
         """
         Generates a PDF report, uploads it to GCS, and returns the URL.
+        Filename format: companyName_reportType.pdf
         """
         try:
-            print(f"[Tool] Generating PDF report for user: {user_id}", flush=True)
+            print(f"[Tool] Generating PDF report for {company_name}: {report_type}", flush=True)
             pdf = FPDF()
             pdf.add_page()
             
@@ -697,8 +729,11 @@ class ToolList:
             clean_content = content.encode('latin-1', 'replace').decode('latin-1')
             pdf.multi_cell(0, 10, clean_content)
             
-            # Temporary file
-            filename = f"report_{user_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf"
+            # Sanitize and construct filename
+            safe_company = company_name.replace(" ", "").replace("/", "_")
+            safe_type = report_type.replace(" ", "").replace("/", "_")
+            filename = f"{safe_company}_{safe_type}.pdf"
+            
             temp_path = f"/tmp/{filename}"
             pdf.output(temp_path)
             
@@ -717,8 +752,8 @@ class ToolList:
             if os.path.exists(temp_path):
                 os.remove(temp_path)
             
-            print(f"[Tool] PDF report generated and uploaded.", flush=True)
-            return f"PDF report generated successfully. You can access it in the Knowledge page."
+            print(f"[Tool] PDF report generated and uploaded: {filename}", flush=True)
+            return f"PDF report '{filename}' generated successfully. You can access it in the Knowledge page."
             
             print(f"Error generating PDF: {e}", flush=True)
             return f"Failed to generate PDF. Please try again."
@@ -775,6 +810,141 @@ class ToolList:
 
         except Exception as e:
             print(f"Error calculating carbon footprint: {e}", flush=True)
+            return {"error": str(e)}
+
+    def _calculate_emissions_batch_bq(self, activities: list[dict], user_id: str) -> dict:
+        """
+        Analytical calculation: Loads activities to a temp BQ table and joins with factors.
+        This is the high-performance path for large datasets.
+        """
+        try:
+            print(f"[Tool] Batch calculating emissions for {len(activities)} activities", flush=True)
+            dataset_id = "dash_beta_database"
+            # Sanitize user_id for table name
+            safe_user_id = user_id.replace("-", "_").replace(".", "_")
+            temp_table_id = f"temp_staging_{safe_user_id}"
+            full_table_name = f"{self.project_id}.{dataset_id}.{temp_table_id}"
+            
+            # 1. Load data to BQ
+            job_config = bigquery.LoadJobConfig(
+                write_disposition="WRITE_TRUNCATE",
+                autodetect=True,
+            )
+            load_job = self.bq_client.load_table_from_json(activities, full_table_name, job_config=job_config)
+            load_job.result() # Wait for completion
+            
+            # 2. Run Analytical Join
+            query = f"""
+                WITH calculated AS (
+                    SELECT 
+                        s.*,
+                        f.factor,
+                        f.scope,
+                        f.category as factor_category,
+                        CAST(s.amount AS FLOAT64) * f.factor as co2_kg
+                    FROM `{full_table_name}` s
+                    JOIN `{self.project_id}.{dataset_id}.emission_factors` f
+                      ON LOWER(s.activity_name) = LOWER(f.activity_name)
+                     AND LOWER(s.unit) = LOWER(f.unit)
+                )
+                SELECT 
+                    scope,
+                    factor_category as category,
+                    SUM(co2_kg) as total_co2,
+                    SUM(CAST(amount AS FLOAT64)) as total_amount,
+                    unit,
+                    COUNT(*) as count
+                FROM calculated
+                GROUP BY 1, 2, 5
+            """
+            query_job = self.bq_client.query(query)
+            results = list(query_job.result())
+            
+            # 3. Format results
+            summary = []
+            grand_total = 0.0
+            for row in results:
+                summary.append({
+                    "scope": row.scope,
+                    "category": row.category,
+                    "total_co2_kg": round(row.total_co2, 2),
+                    "total_amount": row.total_amount,
+                    "unit": row.unit,
+                    "count": row.count
+                })
+                grand_total += row.total_co2
+            
+            # Cleanup temp table
+            self.bq_client.delete_table(full_table_name, not_found_ok=True)
+            
+            return {
+                "total_emissions_kgCO2e": round(grand_total, 2),
+                "breakdown": summary,
+                "status": "success",
+                "processed_count": len(activities)
+            }
+        except Exception as e:
+            print(f"Error in batch calculation: {e}", flush=True)
+            try:
+                self.bq_client.delete_table(full_table_name, not_found_ok=True)
+            except: pass
+            return {"error": str(e)}
+
+    def _calculate_emissions_from_file_bq(self, gcs_uri: str, user_id: str) -> dict:
+        """
+        Reads Excel/CSV from GCS and processes via BigQuery analytical engine.
+        Handles large data files without row-by-row LLM extraction if the file is already structured.
+        """
+        try:
+            print(f"[Tool] Processing structured file from GCS: {gcs_uri}", flush=True)
+            content = self._download_from_gcs(gcs_uri)
+            
+            # Read into Pandas
+            if gcs_uri.lower().endswith(".xlsx"):
+                df = pd.read_excel(io.BytesIO(content))
+            else:
+                if isinstance(content, str):
+                    df = pd.read_csv(io.StringIO(content))
+                else:
+                    df = pd.read_csv(io.BytesIO(content))
+            
+            # Sanitize columns
+            df.columns = [str(c).replace(' ', '_').replace('(', '').replace(')', '').lower() for c in df.columns]
+            
+            rename_map = {}
+            col_lower = [c.lower() for c in df.columns]
+            
+            for syn in ['item', 'activity', 'description', 'name', 'product']:
+                if syn in col_lower:
+                    idx = col_lower.index(syn)
+                    rename_map[df.columns[idx]] = 'activity_name'
+                    break
+            
+            for syn in ['qty', 'quantity', 'amount', 'value', 'usage']:
+                if syn in col_lower:
+                    idx = col_lower.index(syn)
+                    rename_map[df.columns[idx]] = 'amount'
+                    break
+
+            for syn in ['unit', 'measure', 'uom']:
+                if syn in col_lower:
+                    idx = col_lower.index(syn)
+                    rename_map[df.columns[idx]] = 'unit'
+                    break
+            
+            if rename_map:
+                df = df.rename(columns=rename_map)
+            
+            required = ['activity_name', 'amount', 'unit']
+            missing = [r for r in required if r not in df.columns]
+            if missing:
+                return {"error": f"Missing required columns in file: {missing}. Please ensure your file has columns for Activity, Amount, and Unit."}
+
+            activities = df[required].to_dict(orient="records")
+            return self._calculate_emissions_batch_bq(activities, user_id)
+            
+        except Exception as e:
+            print(f"Error processing file for BQ: {e}", flush=True)
             return {"error": str(e)}
 
 
@@ -849,6 +1019,118 @@ class ToolList:
 
         except Exception as e:
             print(f"Error checking bulk readiness: {e}", flush=True)
+            return {"error": str(e)}
+
+    def _extract_activities_from_text(self, text: str) -> list[dict]:
+        """
+        Uses Gemini to extract sustainability activities (Activity, Amount, Unit) from raw text.
+        """
+        prompt = f"""
+        Extract sustainability-related activities from the following document text.
+        Focus on energy consumption, fuel usage, travel (flights/hotel), water, and waste.
+        
+        Return a JSON list of objects with these keys:
+        - activity_name: (e.g. "Electricity", "Petrol", "Short-haul Flight")
+        - amount: (The numerical value)
+        - unit: (e.g. "kWh", "litres", "passenger-km", "tonnes")
+        - category: (e.g. "Energy", "Transport", "Travel")
+        - date: (ISO format if found, otherwise null)
+        
+        Text:
+        {text}
+        
+        JSON Result:
+        """
+        try:
+            response = self.genai_client.models.generate_content(
+                model="gemini-3-flash-preview",
+                contents=prompt,
+                config={
+                    "response_mime_type": "application/json"
+                }
+            )
+            return json.loads(response.text)
+        except Exception as e:
+            print(f"Error in LLM extraction: {e}", flush=True)
+            return []
+
+    def _process_bulk_sustainability_data(self, gcs_uri: str, user_id: str) -> dict:
+        """
+        Bulk processes documents from GCS, extracts activities, and calculates carbon footprint.
+        Now uses BigQuery analytical engine for high-performance batch calculation.
+        """
+        try:
+            print(f"[Tool] Starting bulk processing for: {gcs_uri}", flush=True)
+            
+            # 1. Gather all blobs
+            if not gcs_uri.startswith("gs://"):
+                return {"error": "Invalid URI. Must start with gs://"}
+            
+            parts = gcs_uri.replace("gs://", "").split("/", 1)
+            bucket_name = parts[0]
+            prefix = parts[1] if len(parts) > 1 else ""
+            
+            storage_client = storage.Client(project=self.project_id)
+            bucket = storage_client.bucket(bucket_name)
+            blobs = list(bucket.list_blobs(prefix=prefix))
+            
+            if not blobs:
+                return {"error": "No files found in the specified GCS path."}
+            
+            all_activities = []
+            processed_count = 0
+            
+            for blob in blobs:
+                if blob.name.endswith("/"): continue
+                
+                filename = blob.name.split("/")[-1]
+                if not filename: continue
+                
+                print(f"[Tool] Processing file: {filename}", flush=True)
+                
+                # 2. Extract Text
+                text = ""
+                if blob.name.lower().endswith(".pdf"):
+                    text = self._document_read(f"gs://{bucket_name}/{blob.name}")
+                else:
+                    text = blob.download_as_text()
+                
+                if not text or "Error" in text[:50]: 
+                    continue
+                
+                # 3. Extract Activities via LLM
+                activities = self._extract_activities_from_text(text)
+                for act in activities:
+                    # Sanitize amount to float
+                    try:
+                        act["amount"] = float(act.get("amount", 0))
+                    except:
+                        act["amount"] = 0.0
+                    act["source_file"] = filename
+                    all_activities.append(act)
+                
+                processed_count += 1
+
+            # 4. Batch Calculate via BigQuery Analytical Engine
+            if not all_activities:
+                return {"error": "No sustainability activities were found in the provided documents."}
+
+            batch_results = self._calculate_emissions_batch_bq(all_activities, user_id)
+            
+            if "error" in batch_results:
+                return batch_results
+
+            return {
+                "total_files_processed": processed_count,
+                "total_activities_found": len(all_activities),
+                "total_emissions_kgCO2e": batch_results["total_emissions_kgCO2e"],
+                "emissions_breakdown": batch_results["breakdown"],
+                "activities_sample": all_activities[:15],
+                "ready_for_report": True
+            }
+
+        except Exception as e:
+            print(f"Error in bulk processing: {e}", flush=True)
             return {"error": str(e)}
 
     def get_tools(self) -> list[Tool]:
@@ -968,7 +1250,47 @@ class ToolList:
             func=self._check_bulk_readiness
         )
 
-        tools_list = [google_search_tool, document_read_tool, read_actions_tool, add_action_tool, remove_action_tool, update_action_tool, vertex_search_tool, octopus_fetch_tool, calculate_roi_tool, industry_guidelines_tool, generate_pdf_tool, calculate_carbon_tool, check_readiness_tool]
+        bulk_process_tool = StructuredTool(
+            name="process_bulk_sustainability_data",
+            description="""
+            Bulk processes documents (PDF/TXT) from a GCS folder. 
+            Extracts activities using Document AI and Gemini, then calculates total carbon footprint using BigQuery's analytical engine.
+            This is a long-running process. Always call check_bulk_readiness first.
+            """,
+            args_schema=BulkProcessInput,
+            func=self._process_bulk_sustainability_data
+        )
+
+        calculate_bulk_file_tool = StructuredTool(
+            name="calculate_emissions_from_structured_file",
+            description="""
+            Calculates carbon emissions for a large structured file (CSV/Excel) in GCS.
+            The file MUST have columns for:
+            1. 'Activity' (or 'Item', 'Description'): e.g., 'Electricity', 'Petrol'
+            2. 'Amount' (or 'Qty', 'Usage'): e.g., 500
+            3. 'Unit' (or 'Measure', 'UOM'): e.g., 'kWh', 'litres'
+            This uses BigQuery's analytical engine for high-performance processing of thousands of rows.
+            """,
+            args_schema=BulkProcessInput,
+            func=self._calculate_emissions_from_file_bq
+        )
+
+        tools_list = [
+            google_search_tool, 
+            document_read_tool, 
+            read_actions_tool, 
+            add_action_tool, 
+            remove_action_tool, 
+            update_action_tool, 
+            vertex_search_tool, 
+            octopus_fetch_tool, 
+            calculate_roi_tool, 
+            industry_guidelines_tool, 
+            generate_pdf_tool, 
+            check_readiness_tool, 
+            bulk_process_tool,
+            calculate_bulk_file_tool
+        ]
 
         return tools_list
 

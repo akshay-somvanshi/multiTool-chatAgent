@@ -14,3 +14,7 @@ python-dotenv
 psutil
 google-cloud-bigquery
 fpdf2
+pandas
+openpyxl
+pyarrow
+google-cloud-bigquery-storage

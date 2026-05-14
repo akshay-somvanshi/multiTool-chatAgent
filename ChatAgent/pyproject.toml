@@ -23,6 +23,10 @@ dependencies = [
     "langchain-google-community",
     "uvicorn",
     "psutil",
+    "pandas",
+    "openpyxl",
+    "pyarrow",
+    "google-cloud-bigquery-storage",
 ]
 
 [tool.setuptools.packages.find]
