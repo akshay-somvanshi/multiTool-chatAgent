@@ -16,6 +16,7 @@ from google.cloud import bigquery
 from datetime import datetime
 import pandas as pd
 import io
+import json
 
 from chat_agent.api_client import api_client
 from chat_agent.core.exceptions import APIError
@@ -768,21 +769,29 @@ class ToolList:
         """
         try:
             print(f"[Tool] Calculating carbon footprint for: {activity_name} ({amount} {unit})", flush=True)
-            dataset_id = "dash_beta_database"
-            table_id = "emission_factors"
             
+            # Use semantic search to find the best match
             query = f"""
-                SELECT factor, scope, category, region 
-                FROM `{self.project_id}.{dataset_id}.{table_id}` 
-                WHERE LOWER(activity_name) = @activity 
-                AND LOWER(unit) = @unit
-                ORDER BY year DESC
-                LIMIT 1
+                SELECT 
+                    base.factor, base.scope, base.category, base.region, base.unit as factor_unit, base.full_description
+                FROM VECTOR_SEARCH(
+                    TABLE `carbon_data.emission_factors`,
+                    'embedding',
+                    (
+                        SELECT * FROM ML.GENERATE_EMBEDDING(
+                            MODEL `carbon_data.embedding_model`,
+                            (SELECT @text as content),
+                            STRUCT('RETRIEVAL_QUERY' AS task_type)
+                        )
+                    ),
+                    'ml_generate_embedding_result',
+                    top_k => 1
+                )
             """
+            
             job_config = bigquery.QueryJobConfig(
                 query_parameters=[
-                    bigquery.ScalarQueryParameter("activity", "STRING", activity_name.lower()),
-                    bigquery.ScalarQueryParameter("unit", "STRING", unit.lower())
+                    bigquery.ScalarQueryParameter("text", "STRING", f"{activity_name} ({unit})")
                 ]
             )
             
@@ -791,7 +800,7 @@ class ToolList:
 
             if not results:
                 return {
-                    "error": f"No emission factor found for '{activity_name}' in '{unit}'. Try using different keywords or checking available units (e.g., kWh, litres, tonnes, passenger-km)."
+                    "error": f"No emission factor found for '{activity_name}' in '{unit}'."
                 }
 
             row = results[0]
@@ -799,13 +808,14 @@ class ToolList:
 
             return {
                 "activity": activity_name,
+                "matched_factor": row.full_description,
                 "amount": amount,
                 "unit": unit,
                 "emissions_kgCO2e": round(emissions, 3),
                 "scope": f"Scope {row.scope}",
                 "category": row.category,
                 "region": row.region,
-                "note": "Calculated using open-source conversion factors (DEFRA/EPA)."
+                "note": f"Matched semantically with '{row.full_description}' ({row.factor} per {row.factor_unit})"
             }
 
         except Exception as e:
@@ -819,11 +829,12 @@ class ToolList:
         """
         try:
             print(f"[Tool] Batch calculating emissions for {len(activities)} activities", flush=True)
-            dataset_id = "dash_beta_database"
+            # Staging dataset for temp tables
+            staging_dataset = "carbon_data"
             # Sanitize user_id for table name
             safe_user_id = user_id.replace("-", "_").replace(".", "_")
             temp_table_id = f"temp_staging_{safe_user_id}"
-            full_table_name = f"{self.project_id}.{dataset_id}.{temp_table_id}"
+            full_table_name = f"{self.project_id}.{staging_dataset}.{temp_table_id}"
             
             # 1. Load data to BQ
             job_config = bigquery.LoadJobConfig(
@@ -833,19 +844,30 @@ class ToolList:
             load_job = self.bq_client.load_table_from_json(activities, full_table_name, job_config=job_config)
             load_job.result() # Wait for completion
             
-            # 2. Run Analytical Join
+            # 2. Run Analytical Join using Semantic Search
             query = f"""
-                WITH calculated AS (
+                WITH matched AS (
                     SELECT 
-                        s.*,
-                        f.factor,
-                        f.scope,
-                        f.category as factor_category,
-                        CAST(s.amount AS FLOAT64) * f.factor as co2_kg
-                    FROM `{full_table_name}` s
-                    JOIN `{self.project_id}.{dataset_id}.emission_factors` f
-                      ON LOWER(s.activity_name) = LOWER(f.activity_name)
-                     AND LOWER(s.unit) = LOWER(f.unit)
+                        query.*,
+                        base.factor,
+                        base.scope,
+                        base.category as factor_category,
+                        base.unit as matched_unit,
+                        base.full_description as matched_description,
+                        CAST(query.amount AS FLOAT64) * base.factor as co2_kg
+                    FROM VECTOR_SEARCH(
+                        TABLE `carbon_data.emission_factors`,
+                        'embedding',
+                        (
+                            SELECT * FROM ML.GENERATE_EMBEDDING(
+                                MODEL `carbon_data.embedding_model`,
+                                (SELECT activity_name || ' (' || unit || ')' as content, * FROM `{full_table_name}`),
+                                STRUCT('RETRIEVAL_QUERY' AS task_type)
+                            )
+                        ),
+                        'ml_generate_embedding_result',
+                        top_k => 1
+                    )
                 )
                 SELECT 
                     scope,
@@ -854,7 +876,7 @@ class ToolList:
                     SUM(CAST(amount AS FLOAT64)) as total_amount,
                     unit,
                     COUNT(*) as count
-                FROM calculated
+                FROM matched
                 GROUP BY 1, 2, 5
             """
             query_job = self.bq_client.query(query)
@@ -893,55 +915,94 @@ class ToolList:
     def _calculate_emissions_from_file_bq(self, gcs_uri: str, user_id: str) -> dict:
         """
         Reads Excel/CSV from GCS and processes via BigQuery analytical engine.
-        Handles large data files without row-by-row LLM extraction if the file is already structured.
+        Uses Gemini to dynamically infer the schema (amount, unit, description) of each sheet/file.
         """
         try:
             print(f"[Tool] Processing structured file from GCS: {gcs_uri}", flush=True)
             content = self._download_from_gcs(gcs_uri)
             
-            # Read into Pandas
+            all_activities = []
+            
+            # 1. Read Data (Handle multi-sheet Excel)
             if gcs_uri.lower().endswith(".xlsx"):
-                df = pd.read_excel(io.BytesIO(content))
+                excel_data = pd.read_excel(io.BytesIO(content), sheet_name=None)
+                sheets = excel_data
             else:
                 if isinstance(content, str):
                     df = pd.read_csv(io.StringIO(content))
                 else:
                     df = pd.read_csv(io.BytesIO(content))
-            
-            # Sanitize columns
-            df.columns = [str(c).replace(' ', '_').replace('(', '').replace(')', '').lower() for c in df.columns]
-            
-            rename_map = {}
-            col_lower = [c.lower() for c in df.columns]
-            
-            for syn in ['item', 'activity', 'description', 'name', 'product']:
-                if syn in col_lower:
-                    idx = col_lower.index(syn)
-                    rename_map[df.columns[idx]] = 'activity_name'
-                    break
-            
-            for syn in ['qty', 'quantity', 'amount', 'value', 'usage']:
-                if syn in col_lower:
-                    idx = col_lower.index(syn)
-                    rename_map[df.columns[idx]] = 'amount'
-                    break
+                sheets = {"Data": df}
+                
+            # 2. Process each sheet dynamically
+            for sheet_name, df in sheets.items():
+                if df.empty:
+                    continue
+                
+                print(f"[Tool] Inferring schema for sheet: {sheet_name}", flush=True)
+                
+                # Take a small sample to infer schema
+                sample_df = df.head(2)
+                csv_sample = sample_df.to_csv(index=False)
+                
+                prompt = f"""
+                Analyze the following CSV sample from a spreadsheet sheet named "{sheet_name}".
+                Identify how to calculate carbon emissions from this data.
+                
+                Return a JSON object with:
+                - amount_column: The exact name of the column containing the numerical value to calculate emissions on (e.g. "Kilometers", "Liters", "Cost").
+                - unit: The implied or explicit unit for that amount (e.g. "km", "litres", "gbp"). If not obvious, infer it.
+                - activity_columns: A list of exact column names that contain text describing the activity (e.g. ["Departure", "Destination", "Reason"]).
+                
+                CSV Sample:
+                {csv_sample}
+                
+                JSON:
+                """
+                
+                try:
+                    response = self.genai_client.models.generate_content(
+                        model="gemini-3-flash-preview",
+                        contents=prompt,
+                        config={"response_mime_type": "application/json"}
+                    )
+                    schema = json.loads(response.text)
+                    
+                    amount_col = schema.get("amount_column")
+                    unit_val = schema.get("unit", "unknown")
+                    act_cols = schema.get("activity_columns", [])
+                    
+                    if not amount_col or amount_col not in df.columns:
+                        print(f"[Tool] Could not confidently find amount column for sheet {sheet_name}. Skipping.")
+                        continue
+                        
+                    # 3. Apply Schema using Pandas
+                    for _, row in df.iterrows():
+                        try:
+                            amt = float(row[amount_col])
+                            if pd.isna(amt): continue
+                            
+                            # Construct rich activity name
+                            desc_parts = [str(row[c]) for c in act_cols if c in df.columns and pd.notna(row[c])]
+                            activity_name = f"{sheet_name} - " + " - ".join(desc_parts) if desc_parts else sheet_name
+                            
+                            all_activities.append({
+                                "activity_name": activity_name,
+                                "amount": amt,
+                                "unit": unit_val
+                            })
+                        except Exception as row_err:
+                            continue
+                            
+                except Exception as llm_err:
+                    print(f"[Tool] Error inferring schema for {sheet_name}: {llm_err}")
+                    continue
 
-            for syn in ['unit', 'measure', 'uom']:
-                if syn in col_lower:
-                    idx = col_lower.index(syn)
-                    rename_map[df.columns[idx]] = 'unit'
-                    break
-            
-            if rename_map:
-                df = df.rename(columns=rename_map)
-            
-            required = ['activity_name', 'amount', 'unit']
-            missing = [r for r in required if r not in df.columns]
-            if missing:
-                return {"error": f"Missing required columns in file: {missing}. Please ensure your file has columns for Activity, Amount, and Unit."}
+            if not all_activities:
+                return {"error": "Could not extract any valid activities from the file. Please check the format."}
 
-            activities = df[required].to_dict(orient="records")
-            return self._calculate_emissions_batch_bq(activities, user_id)
+            print(f"[Tool] Consolidated {len(all_activities)} activities. Sending to BigQuery engine.")
+            return self._calculate_emissions_batch_bq(all_activities, user_id)
             
         except Exception as e:
             print(f"Error processing file for BQ: {e}", flush=True)
@@ -1021,117 +1082,6 @@ class ToolList:
             print(f"Error checking bulk readiness: {e}", flush=True)
             return {"error": str(e)}
 
-    def _extract_activities_from_text(self, text: str) -> list[dict]:
-        """
-        Uses Gemini to extract sustainability activities (Activity, Amount, Unit) from raw text.
-        """
-        prompt = f"""
-        Extract sustainability-related activities from the following document text.
-        Focus on energy consumption, fuel usage, travel (flights/hotel), water, and waste.
-        
-        Return a JSON list of objects with these keys:
-        - activity_name: (e.g. "Electricity", "Petrol", "Short-haul Flight")
-        - amount: (The numerical value)
-        - unit: (e.g. "kWh", "litres", "passenger-km", "tonnes")
-        - category: (e.g. "Energy", "Transport", "Travel")
-        - date: (ISO format if found, otherwise null)
-        
-        Text:
-        {text}
-        
-        JSON Result:
-        """
-        try:
-            response = self.genai_client.models.generate_content(
-                model="gemini-3-flash-preview",
-                contents=prompt,
-                config={
-                    "response_mime_type": "application/json"
-                }
-            )
-            return json.loads(response.text)
-        except Exception as e:
-            print(f"Error in LLM extraction: {e}", flush=True)
-            return []
-
-    def _process_bulk_sustainability_data(self, gcs_uri: str, user_id: str) -> dict:
-        """
-        Bulk processes documents from GCS, extracts activities, and calculates carbon footprint.
-        Now uses BigQuery analytical engine for high-performance batch calculation.
-        """
-        try:
-            print(f"[Tool] Starting bulk processing for: {gcs_uri}", flush=True)
-            
-            # 1. Gather all blobs
-            if not gcs_uri.startswith("gs://"):
-                return {"error": "Invalid URI. Must start with gs://"}
-            
-            parts = gcs_uri.replace("gs://", "").split("/", 1)
-            bucket_name = parts[0]
-            prefix = parts[1] if len(parts) > 1 else ""
-            
-            storage_client = storage.Client(project=self.project_id)
-            bucket = storage_client.bucket(bucket_name)
-            blobs = list(bucket.list_blobs(prefix=prefix))
-            
-            if not blobs:
-                return {"error": "No files found in the specified GCS path."}
-            
-            all_activities = []
-            processed_count = 0
-            
-            for blob in blobs:
-                if blob.name.endswith("/"): continue
-                
-                filename = blob.name.split("/")[-1]
-                if not filename: continue
-                
-                print(f"[Tool] Processing file: {filename}", flush=True)
-                
-                # 2. Extract Text
-                text = ""
-                if blob.name.lower().endswith(".pdf"):
-                    text = self._document_read(f"gs://{bucket_name}/{blob.name}")
-                else:
-                    text = blob.download_as_text()
-                
-                if not text or "Error" in text[:50]: 
-                    continue
-                
-                # 3. Extract Activities via LLM
-                activities = self._extract_activities_from_text(text)
-                for act in activities:
-                    # Sanitize amount to float
-                    try:
-                        act["amount"] = float(act.get("amount", 0))
-                    except:
-                        act["amount"] = 0.0
-                    act["source_file"] = filename
-                    all_activities.append(act)
-                
-                processed_count += 1
-
-            # 4. Batch Calculate via BigQuery Analytical Engine
-            if not all_activities:
-                return {"error": "No sustainability activities were found in the provided documents."}
-
-            batch_results = self._calculate_emissions_batch_bq(all_activities, user_id)
-            
-            if "error" in batch_results:
-                return batch_results
-
-            return {
-                "total_files_processed": processed_count,
-                "total_activities_found": len(all_activities),
-                "total_emissions_kgCO2e": batch_results["total_emissions_kgCO2e"],
-                "emissions_breakdown": batch_results["breakdown"],
-                "activities_sample": all_activities[:15],
-                "ready_for_report": True
-            }
-
-        except Exception as e:
-            print(f"Error in bulk processing: {e}", flush=True)
-            return {"error": str(e)}
 
     def get_tools(self) -> list[Tool]:
         google_search_tool = Tool(
@@ -1231,9 +1181,10 @@ class ToolList:
         calculate_carbon_tool = StructuredTool(
             name="calculate_carbon_footprint",
             description="""
-            Calculates carbon emissions (kgCO2e) based on activity data. 
+            Calculates carbon emissions (kgCO2e) using a semantic analytical engine. 
+            Automatically matches messy activity names (e.g., 'British Airways flight') to standardized factors.
             Covers Scope 1 (fuel), Scope 2 (electricity), and Scope 3 (travel, water, waste).
-            Always ask for activity type (e.g. Electricity), amount (e.g. 500) and unit (e.g. kWh).
+            Always ask for activity type, amount, and unit.
             """,
             args_schema=CarbonCalculationInput,
             func=self._calculate_carbon_footprint
@@ -1250,16 +1201,6 @@ class ToolList:
             func=self._check_bulk_readiness
         )
 
-        bulk_process_tool = StructuredTool(
-            name="process_bulk_sustainability_data",
-            description="""
-            Bulk processes documents (PDF/TXT) from a GCS folder. 
-            Extracts activities using Document AI and Gemini, then calculates total carbon footprint using BigQuery's analytical engine.
-            This is a long-running process. Always call check_bulk_readiness first.
-            """,
-            args_schema=BulkProcessInput,
-            func=self._process_bulk_sustainability_data
-        )
 
         calculate_bulk_file_tool = StructuredTool(
             name="calculate_emissions_from_structured_file",
@@ -1288,7 +1229,6 @@ class ToolList:
             industry_guidelines_tool, 
             generate_pdf_tool, 
             check_readiness_tool, 
-            bulk_process_tool,
             calculate_bulk_file_tool
         ]
 
