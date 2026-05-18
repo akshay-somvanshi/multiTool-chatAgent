@@ -14,6 +14,7 @@ from urllib.parse import urlparse, parse_qs, unquote
 from google.cloud import storage
 from google.cloud import bigquery
 from datetime import datetime
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import pandas as pd
 import io
 import json
@@ -763,76 +764,6 @@ class ToolList:
             print(f"Error generating PDF: {e}", flush=True)
             return f"Failed to generate PDF. Please try again."
 
-    # def _calculate_carbon_footprint(self, activity_name: str, amount: float, unit: str) -> dict:
-    #     """
-    #     Calculates carbon emissions (kgCO2e) by querying the BigQuery emission factors table.
-    #     """
-    #     try:
-    #         print(f"[Tool] Calculating carbon footprint for: {activity_name} ({amount} {unit})", flush=True)
-            
-    #         # Use semantic search to find the best match with Exact Unit Filtering
-    #         query = f"""
-    #             SELECT * FROM (
-    #                 SELECT 
-    #                     base.factor, base.scope, base.category, base.region, base.unit as factor_unit, base.full_description,
-    #                     ROW_NUMBER() OVER(ORDER BY distance) as rn
-    #                 FROM VECTOR_SEARCH(
-    #                     TABLE `carbon_data.emission_factors`,
-    #                     'embedding',
-    #                     (
-    #                         SELECT * FROM ML.GENERATE_EMBEDDING(
-    #                             MODEL `carbon_data.embedding_model`,
-    #                             (SELECT @text as content),
-    #                             STRUCT('RETRIEVAL_QUERY' AS task_type)
-    #                         )
-    #                     ),
-    #                     'ml_generate_embedding_result',
-    #                     top_k => 1000
-    #                 )
-    #                 WHERE LOWER(base.unit) IN (
-    #                     LOWER(@unit), 
-    #                     'passenger.' || LOWER(@unit),
-    #                     'vehicle.' || LOWER(@unit),
-    #                     LOWER(@unit) || '-vehicle'
-    #                 )
-    #                 AND base.category NOT LIKE 'WTT-%'
-    #             ) WHERE rn = 1
-    #         """
-            
-    #         job_config = bigquery.QueryJobConfig(
-    #             query_parameters=[
-    #                 bigquery.ScalarQueryParameter("text", "STRING", activity_name),
-    #                 bigquery.ScalarQueryParameter("unit", "STRING", unit)
-    #             ]
-    #         )
-            
-    #         query_job = self.bq_client.query(query, job_config=job_config)
-    #         results = list(query_job.result())
-
-    #         if not results:
-    #             return {
-    #                 "error": f"No emission factor found for '{activity_name}' in '{unit}'."
-    #             }
-
-    #         row = results[0]
-    #         emissions = amount * row.factor
-
-    #         return {
-    #             "activity": activity_name,
-    #             "matched_factor": row.full_description,
-    #             "amount": amount,
-    #             "unit": unit,
-    #             "emissions_kgCO2e": round(emissions, 3),
-    #             "scope": f"Scope {row.scope}",
-    #             "category": row.category,
-    #             "region": row.region,
-    #             "note": f"Matched semantically with '{row.full_description}' ({row.factor} per {row.factor_unit})"
-    #         }
-
-    #     except Exception as e:
-    #         print(f"Error calculating carbon footprint: {e}", flush=True)
-    #         return {"error": str(e)}
-
     def _calculate_emissions_batch_bq(self, activities: list[dict], user_id: str) -> dict:
         """
         Analytical calculation: Loads activities to a temp BQ table and joins with factors.
@@ -940,7 +871,6 @@ class ToolList:
             return {
                 "total_emissions_kgCO2e": round(grand_total, 2),
                 "breakdown": summary,
-                "audit_log_uri": audit_uri,
                 "audit_sample": audit_sample,
                 "status": "success",
                 "processed_count": len(activities)
@@ -952,171 +882,172 @@ class ToolList:
             except: pass
             return {"error": str(e)}
 
+    def _process_sheet(self, sheet_name: str, df: pd.DataFrame) -> list[dict]:
+        """
+        Infers schema via Gemini and extracts activity rows for a single sheet.
+        Designed to be called concurrently across sheets.
+        """
+        if df.empty:
+            return []
+
+        # Dynamic header promotion for dirty corporate sheets (e.g. title banners at the top)
+        for idx in range(min(5, len(df))):
+            row_vals = [str(x).strip().lower() for x in df.iloc[idx].values if pd.notna(x)]
+            header_keywords = [
+                "kwh", "amount", "total", "supplier", "month", "class", "unit", "distance",
+                "km", "miles", "date", "passenger", "reason", "departure", "destination", "hotel", "postcode"
+            ]
+            matches = sum(1 for v in row_vals if any(k in v for k in header_keywords))
+            current_has_unnamed = any("unnamed" in str(c).lower() or pd.isna(c) for c in df.columns)
+
+            if current_has_unnamed and (matches >= 2 or (matches >= 1 and any("kwh" in v or "total" in v for v in row_vals))):
+                new_headers = []
+                for col_idx, val in enumerate(df.iloc[idx].values):
+                    new_headers.append(str(val).strip() if pd.notna(val) else f"Unnamed: {col_idx}")
+                df.columns = new_headers
+                df = df.iloc[idx + 1:].reset_index(drop=True)
+                print(f"[Tool] Promoted headers for {sheet_name} at row {idx}: {new_headers}", flush=True)
+                break
+
+        print(f"[Tool] Inferring schema for sheet: {sheet_name}", flush=True)
+
+        csv_sample = df.head(2).to_csv(index=False)
+        prompt = f"""
+        Analyze the following CSV sample from a spreadsheet sheet named "{sheet_name}".
+        Identify how to calculate carbon emissions from this data.
+
+        Return a JSON object with:
+        - amount_column: The exact name of the column containing the numerical value to calculate emissions on (e.g. "Kilometers", "Liters", "Cost", "kWh", "Nights").
+        - unit: The implied or explicit unit for that amount (e.g. "km", "litres", "gbp", "kWh", "nights"). If not obvious, infer it.
+        - activity_columns: A list of exact column names that help identify the specific type of transport or route (e.g., ["Vehicle Type", "Class", "Fuel", "Departure", "Destination"]). CRITICAL: DO NOT include columns containing employee names, dates, passenger names, reasons for travel, or project codes! Locations ARE helpful to determine if a flight/train is domestic or international.
+
+        CSV Sample:
+        {csv_sample}
+
+        JSON:
+        """
+
+        try:
+            response = self.genai_client.models.generate_content(
+                model="gemini-3-flash-preview",
+                contents=prompt,
+                config={"response_mime_type": "application/json"}
+            )
+            print(f"[Tool] Schema for sheet '{sheet_name}' generated", flush=True)
+            schema = json.loads(response.text)
+        except Exception as llm_err:
+            print(f"[Tool] Error inferring schema for '{sheet_name}': {llm_err}", flush=True)
+            return []
+
+        amount_col = schema.get("amount_column")
+        unit_val = schema.get("unit", "unknown")
+        act_cols = schema.get("activity_columns", [])
+
+        # Compute virtual 'nights' column for hotel sheets with check-in/check-out dates
+        checkin_col = next((c for c in df.columns if any(k in str(c).lower() for k in ["check in", "check-in", "checkin"])), None)
+        checkout_col = next((c for c in df.columns if any(k in str(c).lower() for k in ["check out", "check-out", "checkout"])), None)
+
+        if checkin_col and checkout_col:
+            try:
+                df[checkin_col] = pd.to_datetime(df[checkin_col], errors='coerce')
+                df[checkout_col] = pd.to_datetime(df[checkout_col], errors='coerce')
+                df = df.dropna(subset=[checkin_col, checkout_col])
+                df['nights'] = (df[checkout_col] - df[checkin_col]).dt.days
+                amount_col = 'nights'
+                unit_val = 'room per night'
+                hotel_col = next((c for c in df.columns if "hotel" in str(c).lower()), None)
+                dest_col = next((c for c in df.columns if "destination" in str(c).lower()), None)
+                act_cols = [c for c in [hotel_col, dest_col] if c] or [df.columns[0]]
+            except Exception as e:
+                print(f"[Tool] Failed to calculate virtual nights column for '{sheet_name}': {e}", flush=True)
+
+        if not amount_col or amount_col not in df.columns:
+            print(f"[Tool] Could not find amount column for '{sheet_name}'. Skipping.", flush=True)
+            return []
+
+        activities = []
+        for _, row in df.iterrows():
+            try:
+                # Skip summary/total rows
+                is_total_row = any(
+                    str(row[col]).strip().lower() in {"total", "totals", "grand total", "subtotal", "sum", "total / average"}
+                    or str(row[col]).strip().lower().startswith("total ")
+                    or str(row[col]).strip().lower().endswith(" total")
+                    for col in df.columns if pd.notna(row[col])
+                )
+                if is_total_row:
+                    continue
+
+                amt = float(row[amount_col])
+                if pd.isna(amt) or amt <= 0:
+                    continue
+
+                desc_parts = [str(row[c]) for c in act_cols if c in df.columns and pd.notna(row[c])]
+                activity_name = f"{sheet_name} - " + " - ".join(desc_parts) if desc_parts else sheet_name
+
+                if any(t in sheet_name.lower() or t in activity_name.lower() for t in ["flight", "plane", "aviation", "air"]):
+                    if not any(c in activity_name.lower() for c in ["economy", "business", "first", "premium", "average"]):
+                        activity_name += " - Average passenger"
+
+                row_context = " | ".join(f"{k}: {v}" for k, v in row.items() if pd.notna(v))
+
+                activities.append({
+                    "row_id": f"{sheet_name}_{len(activities)}",
+                    "activity_name": activity_name,
+                    "amount": amt,
+                    "unit": unit_val,
+                    "context": row_context
+                })
+            except Exception:
+                continue
+
+        print(f"[Tool] Sheet '{sheet_name}': extracted {len(activities)} activities", flush=True)
+        return activities
+
     def _calculate_emissions_from_file_bq(self, gcs_uri: str, user_id: str) -> dict:
         """
         Reads Excel/CSV from GCS and processes via BigQuery analytical engine.
-        Uses Gemini to dynamically infer the schema (amount, unit, description) of each sheet/file.
+        Uses Gemini to dynamically infer the schema for each sheet — sheets are processed in parallel.
         """
         try:
             print(f"[Tool] Processing structured file from GCS: {gcs_uri}", flush=True)
             content = self._download_from_gcs(gcs_uri)
-            
-            all_activities = []
-            
-            # 1. Read Data (Handle multi-sheet Excel)
+
+            # Read file into sheets dict
             if gcs_uri.lower().endswith(".xlsx"):
-                excel_data = pd.read_excel(io.BytesIO(content), sheet_name=None)
-                sheets = excel_data
+                sheets = pd.read_excel(io.BytesIO(content), sheet_name=None)
             else:
-                if isinstance(content, str):
-                    df = pd.read_csv(io.StringIO(content))
-                else:
-                    df = pd.read_csv(io.BytesIO(content))
+                df = pd.read_csv(io.StringIO(content) if isinstance(content, str) else io.BytesIO(content))
                 sheets = {"Data": df}
-                
-            # 2. Process each sheet dynamically
-            for sheet_name, df in sheets.items():
-                if df.empty:
-                    continue
-                
-                # Dynamic Header Promotion for dirty corporate sheets (e.g. title banners at the top)
-                original_cols = list(df.columns)
-                for idx in range(min(5, len(df))):
-                    row_vals = [str(x).strip().lower() for x in df.iloc[idx].values if pd.notna(x)]
-                    header_keywords = [
-                        "kwh", "amount", "total", "supplier", "month", "class", "unit", "distance", 
-                        "km", "miles", "date", "passenger", "reason", "departure", "destination", "hotel", "postcode"
-                    ]
-                    matches = sum(1 for v in row_vals if any(k in v for k in header_keywords))
-                    current_has_unnamed = any("unnamed" in str(c).lower() or pd.isna(c) for c in df.columns)
-                    
-                    if current_has_unnamed and (matches >= 2 or (matches >= 1 and any("kwh" in v or "total" in v for v in row_vals))):
-                        new_headers = []
-                        for col_idx, val in enumerate(df.iloc[idx].values):
-                            if pd.notna(val):
-                                new_headers.append(str(val).strip())
-                            else:
-                                new_headers.append(f"Unnamed: {col_idx}")
-                        df.columns = new_headers
-                        df = df.iloc[idx + 1:].reset_index(drop=True)
-                        print(f"[Tool] Promoted headers for {sheet_name} at row {idx}: {new_headers}", flush=True)
-                        break
 
-                print(f"[Tool] Inferring schema for sheet: {sheet_name}", flush=True)
-                
-                # Take a small sample to infer schema
-                sample_df = df.head(2)
-                csv_sample = sample_df.to_csv(index=False)
-                
-                prompt = f"""
-                Analyze the following CSV sample from a spreadsheet sheet named "{sheet_name}".
-                Identify how to calculate carbon emissions from this data.
-                
-                Return a JSON object with:
-                - amount_column: The exact name of the column containing the numerical value to calculate emissions on (e.g. "Kilometers", "Liters", "Cost", "kWh", "Nights").
-                - unit: The implied or explicit unit for that amount (e.g. "km", "litres", "gbp", "kWh", "nights"). If not obvious, infer it.
-                - activity_columns: A list of exact column names that help identify the specific type of transport or route (e.g., ["Vehicle Type", "Class", "Fuel", "Departure", "Destination"]). CRITICAL: DO NOT include columns containing employee names, dates, passenger names, reasons for travel, or project codes! Locations ARE helpful to determine if a flight/train is domestic or international.
-                
-                CSV Sample:
-                {csv_sample}
-                
-                JSON:
-                """
-                
-                try:
-                    response = self.genai_client.models.generate_content(
-                        model="gemini-3.1-pro-preview",
-                        contents=prompt,
-                        config={"response_mime_type": "application/json"}
-                    )
+            non_empty_sheets = {name: df for name, df in sheets.items() if not df.empty}
+            if not non_empty_sheets:
+                return {"error": "All sheets in the file are empty."}
 
-                    print(f"[Tool] Schema for sheet {sheet_name} generated")
+            print(f"[Tool] Processing {len(non_empty_sheets)} sheet(s) in parallel", flush=True)
 
-                    schema = json.loads(response.text)
-                    
-                    amount_col = schema.get("amount_column")
-                    unit_val = schema.get("unit", "unknown")
-                    act_cols = schema.get("activity_columns", [])
-                    
-                    # Dynamically compute virtual 'nights' column if 'Check in date' and 'Check out date' exist
-                    checkin_col = next((c for c in df.columns if "check in" in str(c).lower() or "check-in" in str(c).lower() or "checkin" in str(c).lower()), None)
-                    checkout_col = next((c for c in df.columns if "check out" in str(c).lower() or "check-out" in str(c).lower() or "checkout" in str(c).lower()), None)
-                    
-                    if checkin_col and checkout_col:
-                        try:
-                            # Convert to datetime and calculate diff
-                            df[checkin_col] = pd.to_datetime(df[checkin_col], errors='coerce')
-                            df[checkout_col] = pd.to_datetime(df[checkout_col], errors='coerce')
-                            df = df.dropna(subset=[checkin_col, checkout_col])
-                            df['nights'] = (df[checkout_col] - df[checkin_col]).dt.days
-                            amount_col = 'nights'
-                            unit_val = 'room per night'
-                            # Infer some good descriptive columns for Hotels
-                            hotel_col = next((c for c in df.columns if "hotel" in str(c).lower()), None)
-                            dest_col = next((c for c in df.columns if "destination" in str(c).lower()), None)
-                            act_cols = []
-                            if hotel_col: act_cols.append(hotel_col)
-                            if dest_col: act_cols.append(dest_col)
-                            if not act_cols: act_cols = [df.columns[0]]
-                        except Exception as e:
-                            print(f"[Tool] Failed to calculate virtual nights column for sheet {sheet_name}: {e}", flush=True)
-
-                    if not amount_col or amount_col not in df.columns:
-                        print(f"[Tool] Could not confidently find amount column for sheet {sheet_name}. Skipping.")
-                        continue
-                        
-                    # 3. Apply Schema using Pandas
-                    for _, row in df.iterrows():
-                        try:
-                            # Check if this row is a Total/Summary row
-                            is_total_row = False
-                            for col in df.columns:
-                                if pd.notna(row[col]):
-                                    val_str = str(row[col]).strip().lower()
-                                    if val_str in ["total", "totals", "grand total", "subtotal", "sum", "total / average"]:
-                                        is_total_row = True
-                                        break
-                                    if val_str.startswith("total ") or val_str.endswith(" total"):
-                                        is_total_row = True
-                                        break
-                            if is_total_row:
-                                print(f"[Tool] Skipping summary/total row", flush=True)
-                                continue
-                                
-                            amt = float(row[amount_col])
-                            if pd.isna(amt) or amt <= 0: continue
-                            
-                            # Construct rich activity name for semantic search
-                            desc_parts = [str(row[c]) for c in act_cols if c in df.columns and pd.notna(row[c])]
-                            activity_name = f"{sheet_name} - " + " - ".join(desc_parts) if desc_parts else sheet_name
-                            
-                            if any(t in sheet_name.lower() or t in activity_name.lower() for t in ["flight", "plane", "aviation", "air"]):
-                                if not any(c in activity_name.lower() for c in ["economy", "business", "first", "premium", "average"]):
-                                    activity_name += " - Average passenger"
-                            
-                            # Preserve all original row data for the audit trail
-                            row_context = " | ".join(f"{k}: {v}" for k, v in row.items() if pd.notna(v))
-                            
-                            all_activities.append({
-                                "row_id": f"{sheet_name}_{len(all_activities)}",
-                                "activity_name": activity_name,
-                                "amount": amt,
-                                "unit": unit_val,
-                                "context": row_context
-                            })
-                        except Exception as row_err:
-                            continue
-                            
-                except Exception as llm_err:
-                    print(f"[Tool] Error inferring schema for {sheet_name}: {llm_err}")
-                    continue
+            # Infer schema and extract rows for all sheets concurrently
+            all_activities = []
+            max_workers = min(len(non_empty_sheets), 5)
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                futures = {
+                    executor.submit(self._process_sheet, name, df): name
+                    for name, df in non_empty_sheets.items()
+                }
+                for future in as_completed(futures):
+                    sheet_name = futures[future]
+                    try:
+                        activities = future.result()
+                        all_activities.extend(activities)
+                    except Exception as e:
+                        print(f"[Tool] Sheet '{sheet_name}' failed: {e}", flush=True)
 
             if not all_activities:
                 return {"error": "Could not extract any valid activities from the file. Please check the format."}
 
-            print(f"[Tool] Consolidated {len(all_activities)} activities. Sending to BigQuery engine.")
+            print(f"[Tool] Consolidated {len(all_activities)} activities. Sending to BigQuery engine.", flush=True)
             return self._calculate_emissions_batch_bq(all_activities, user_id)
-            
+
         except Exception as e:
             print(f"Error processing file for BQ: {e}", flush=True)
             return {"error": str(e)}
@@ -1290,18 +1221,6 @@ class ToolList:
             args_schema=PDFGeneratorInput,
             func=self._generate_pdf_report
         )
-
-        # calculate_carbon_tool = StructuredTool(
-        #     name="calculate_carbon_footprint",
-        #     description="""
-        #     Calculates carbon emissions (kgCO2e) using a semantic analytical engine. 
-        #     Automatically matches messy activity names (e.g., 'British Airways flight') to standardized factors.
-        #     Covers Scope 1 (fuel), Scope 2 (electricity), and Scope 3 (travel, water, waste).
-        #     Always ask for activity type, amount, and unit.
-        #     """,
-        #     args_schema=CarbonCalculationInput,
-        #     func=self._calculate_carbon_footprint
-        # )
 
         check_readiness_tool = StructuredTool(
             name="check_bulk_readiness",
