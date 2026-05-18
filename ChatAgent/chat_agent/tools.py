@@ -763,64 +763,75 @@ class ToolList:
             print(f"Error generating PDF: {e}", flush=True)
             return f"Failed to generate PDF. Please try again."
 
-    def _calculate_carbon_footprint(self, activity_name: str, amount: float, unit: str) -> dict:
-        """
-        Calculates carbon emissions (kgCO2e) by querying the BigQuery emission factors table.
-        """
-        try:
-            print(f"[Tool] Calculating carbon footprint for: {activity_name} ({amount} {unit})", flush=True)
+    # def _calculate_carbon_footprint(self, activity_name: str, amount: float, unit: str) -> dict:
+    #     """
+    #     Calculates carbon emissions (kgCO2e) by querying the BigQuery emission factors table.
+    #     """
+    #     try:
+    #         print(f"[Tool] Calculating carbon footprint for: {activity_name} ({amount} {unit})", flush=True)
             
-            # Use semantic search to find the best match
-            query = f"""
-                SELECT 
-                    base.factor, base.scope, base.category, base.region, base.unit as factor_unit, base.full_description
-                FROM VECTOR_SEARCH(
-                    TABLE `carbon_data.emission_factors`,
-                    'embedding',
-                    (
-                        SELECT * FROM ML.GENERATE_EMBEDDING(
-                            MODEL `carbon_data.embedding_model`,
-                            (SELECT @text as content),
-                            STRUCT('RETRIEVAL_QUERY' AS task_type)
-                        )
-                    ),
-                    'ml_generate_embedding_result',
-                    top_k => 1
-                )
-            """
+    #         # Use semantic search to find the best match with Exact Unit Filtering
+    #         query = f"""
+    #             SELECT * FROM (
+    #                 SELECT 
+    #                     base.factor, base.scope, base.category, base.region, base.unit as factor_unit, base.full_description,
+    #                     ROW_NUMBER() OVER(ORDER BY distance) as rn
+    #                 FROM VECTOR_SEARCH(
+    #                     TABLE `carbon_data.emission_factors`,
+    #                     'embedding',
+    #                     (
+    #                         SELECT * FROM ML.GENERATE_EMBEDDING(
+    #                             MODEL `carbon_data.embedding_model`,
+    #                             (SELECT @text as content),
+    #                             STRUCT('RETRIEVAL_QUERY' AS task_type)
+    #                         )
+    #                     ),
+    #                     'ml_generate_embedding_result',
+    #                     top_k => 1000
+    #                 )
+    #                 WHERE LOWER(base.unit) IN (
+    #                     LOWER(@unit), 
+    #                     'passenger.' || LOWER(@unit),
+    #                     'vehicle.' || LOWER(@unit),
+    #                     LOWER(@unit) || '-vehicle'
+    #                 )
+    #                 AND base.category NOT LIKE 'WTT-%'
+    #             ) WHERE rn = 1
+    #         """
             
-            job_config = bigquery.QueryJobConfig(
-                query_parameters=[
-                    bigquery.ScalarQueryParameter("text", "STRING", f"{activity_name} ({unit})")
-                ]
-            )
+    #         job_config = bigquery.QueryJobConfig(
+    #             query_parameters=[
+    #                 bigquery.ScalarQueryParameter("text", "STRING", activity_name),
+    #                 bigquery.ScalarQueryParameter("unit", "STRING", unit)
+    #             ]
+    #         )
             
-            query_job = self.bq_client.query(query, job_config=job_config)
-            results = list(query_job.result())
+    #         query_job = self.bq_client.query(query, job_config=job_config)
+    #         results = list(query_job.result())
 
-            if not results:
-                return {
-                    "error": f"No emission factor found for '{activity_name}' in '{unit}'."
-                }
+    #         if not results:
+    #             return {
+    #                 "error": f"No emission factor found for '{activity_name}' in '{unit}'."
+    #             }
 
-            row = results[0]
-            emissions = amount * row.factor
+    #         row = results[0]
+    #         emissions = amount * row.factor
 
-            return {
-                "activity": activity_name,
-                "matched_factor": row.full_description,
-                "amount": amount,
-                "unit": unit,
-                "emissions_kgCO2e": round(emissions, 3),
-                "scope": f"Scope {row.scope}",
-                "category": row.category,
-                "region": row.region,
-                "note": f"Matched semantically with '{row.full_description}' ({row.factor} per {row.factor_unit})"
-            }
+    #         return {
+    #             "activity": activity_name,
+    #             "matched_factor": row.full_description,
+    #             "amount": amount,
+    #             "unit": unit,
+    #             "emissions_kgCO2e": round(emissions, 3),
+    #             "scope": f"Scope {row.scope}",
+    #             "category": row.category,
+    #             "region": row.region,
+    #             "note": f"Matched semantically with '{row.full_description}' ({row.factor} per {row.factor_unit})"
+    #         }
 
-        except Exception as e:
-            print(f"Error calculating carbon footprint: {e}", flush=True)
-            return {"error": str(e)}
+    #     except Exception as e:
+    #         print(f"Error calculating carbon footprint: {e}", flush=True)
+    #         return {"error": str(e)}
 
     def _calculate_emissions_batch_bq(self, activities: list[dict], user_id: str) -> dict:
         """
@@ -844,17 +855,21 @@ class ToolList:
             load_job = self.bq_client.load_table_from_json(activities, full_table_name, job_config=job_config)
             load_job.result() # Wait for completion
             
-            # 2. Run Analytical Join using Semantic Search
+            # 2. Run Analytical Join using Semantic Search with Exact Unit Filtering
             query = f"""
-                WITH matched AS (
+                SELECT * FROM (
                     SELECT 
-                        query.*,
-                        base.factor,
+                        query.row_id,
+                        query.context as original_context,
+                        query.activity_name as search_activity,
+                        query.amount as original_amount,
+                        query.unit as original_unit,
+                        base.full_description as matched_factor,
+                        base.factor as conversion_factor,
                         base.scope,
                         base.category as factor_category,
-                        base.unit as matched_unit,
-                        base.full_description as matched_description,
-                        CAST(query.amount AS FLOAT64) * base.factor as co2_kg
+                        CAST(query.amount AS FLOAT64) * base.factor as co2_kg,
+                        ROW_NUMBER() OVER (PARTITION BY query.row_id ORDER BY distance) as rn
                     FROM VECTOR_SEARCH(
                         TABLE `carbon_data.emission_factors`,
                         'embedding',
@@ -866,35 +881,58 @@ class ToolList:
                             )
                         ),
                         'ml_generate_embedding_result',
-                        top_k => 1
+                        top_k => 1000
                     )
-                )
-                SELECT 
-                    scope,
-                    factor_category as category,
-                    SUM(co2_kg) as total_co2,
-                    SUM(CAST(amount AS FLOAT64)) as total_amount,
-                    unit,
-                    COUNT(*) as count
-                FROM matched
-                GROUP BY 1, 2, 5
+                    WHERE LOWER(base.unit) IN (
+                        LOWER(query.unit), 
+                        'passenger.' || LOWER(query.unit),
+                        'vehicle.' || LOWER(query.unit),
+                        LOWER(query.unit) || '-vehicle'
+                    )
+                    AND base.category NOT LIKE 'WTT-%'
+                ) WHERE rn = 1
             """
             query_job = self.bq_client.query(query)
-            results = list(query_job.result())
+            df = query_job.to_dataframe()
             
-            # 3. Format results
+            # 3. Generate Audit Trail
+            timestamp = datetime.now().strftime("%Y%md%H%M%S")
+            audit_filename = f"audit_logs/audit_{safe_user_id}_{timestamp}.csv"
+            audit_bucket_name = f"{self.project_id}-reports"
+            
+            # Upload to GCS
+            storage_client = storage.Client(project=self.project_id)
+            bucket = storage_client.bucket(audit_bucket_name)
+            if not bucket.exists():
+                bucket = storage_client.create_bucket(audit_bucket_name)
+                
+            blob = bucket.blob(audit_filename)
+            blob.upload_from_string(df.to_csv(index=False), content_type="text/csv")
+            audit_uri = f"gs://{audit_bucket_name}/{audit_filename}"
+            
+            # 4. Format results
+            grand_total = df['co2_kg'].sum()
             summary = []
-            grand_total = 0.0
-            for row in results:
+            
+            # Group by scope, category, and unit
+            grouped = df.groupby(['scope', 'factor_category', 'original_unit']).agg(
+                total_co2=('co2_kg', 'sum'),
+                total_amount=('original_amount', 'sum'),
+                count=('row_id', 'count')
+            ).reset_index()
+            
+            for _, row in grouped.iterrows():
                 summary.append({
-                    "scope": row.scope,
-                    "category": row.category,
-                    "total_co2_kg": round(row.total_co2, 2),
-                    "total_amount": row.total_amount,
-                    "unit": row.unit,
-                    "count": row.count
+                    "scope": row['scope'],
+                    "category": row['factor_category'],
+                    "total_co2_kg": round(row['total_co2'], 2),
+                    "total_amount": round(row['total_amount'], 2),
+                    "unit": row['original_unit'],
+                    "count": row['count']
                 })
-                grand_total += row.total_co2
+            
+            # Sample for the LLM
+            audit_sample = df.head(3).to_dict(orient="records")
             
             # Cleanup temp table
             self.bq_client.delete_table(full_table_name, not_found_ok=True)
@@ -902,6 +940,8 @@ class ToolList:
             return {
                 "total_emissions_kgCO2e": round(grand_total, 2),
                 "breakdown": summary,
+                "audit_log_uri": audit_uri,
+                "audit_sample": audit_sample,
                 "status": "success",
                 "processed_count": len(activities)
             }
@@ -952,7 +992,7 @@ class ToolList:
                 Return a JSON object with:
                 - amount_column: The exact name of the column containing the numerical value to calculate emissions on (e.g. "Kilometers", "Liters", "Cost").
                 - unit: The implied or explicit unit for that amount (e.g. "km", "litres", "gbp"). If not obvious, infer it.
-                - activity_columns: A list of exact column names that contain text describing the activity (e.g. ["Departure", "Destination", "Reason"]).
+                - activity_columns: A list of exact column names that help identify the specific type of transport or route (e.g., ["Vehicle Type", "Class", "Fuel", "Departure", "Destination"]). CRITICAL: DO NOT include columns containing employee names, dates, passenger names, reasons for travel, or project codes! Locations ARE helpful to determine if a flight/train is domestic or international.
                 
                 CSV Sample:
                 {csv_sample}
@@ -962,10 +1002,13 @@ class ToolList:
                 
                 try:
                     response = self.genai_client.models.generate_content(
-                        model="gemini-3-flash-preview",
+                        model="gemini-3.1-pro-preview",
                         contents=prompt,
                         config={"response_mime_type": "application/json"}
                     )
+
+                    print(f"[Tool] Schema for sheet {sheet_name} generated")
+
                     schema = json.loads(response.text)
                     
                     amount_col = schema.get("amount_column")
@@ -982,14 +1025,23 @@ class ToolList:
                             amt = float(row[amount_col])
                             if pd.isna(amt): continue
                             
-                            # Construct rich activity name
+                            # Construct rich activity name for semantic search
                             desc_parts = [str(row[c]) for c in act_cols if c in df.columns and pd.notna(row[c])]
                             activity_name = f"{sheet_name} - " + " - ".join(desc_parts) if desc_parts else sheet_name
                             
+                            if any(t in sheet_name.lower() or t in activity_name.lower() for t in ["flight", "plane", "aviation", "air"]):
+                                if not any(c in activity_name.lower() for c in ["economy", "business", "first", "premium", "average"]):
+                                    activity_name += " - Average passenger"
+                            
+                            # Preserve all original row data for the audit trail
+                            row_context = " | ".join(f"{k}: {v}" for k, v in row.items() if pd.notna(v))
+                            
                             all_activities.append({
+                                "row_id": f"{sheet_name}_{len(all_activities)}",
                                 "activity_name": activity_name,
                                 "amount": amt,
-                                "unit": unit_val
+                                "unit": unit_val,
+                                "context": row_context
                             })
                         except Exception as row_err:
                             continue
@@ -1178,17 +1230,17 @@ class ToolList:
             func=self._generate_pdf_report
         )
 
-        calculate_carbon_tool = StructuredTool(
-            name="calculate_carbon_footprint",
-            description="""
-            Calculates carbon emissions (kgCO2e) using a semantic analytical engine. 
-            Automatically matches messy activity names (e.g., 'British Airways flight') to standardized factors.
-            Covers Scope 1 (fuel), Scope 2 (electricity), and Scope 3 (travel, water, waste).
-            Always ask for activity type, amount, and unit.
-            """,
-            args_schema=CarbonCalculationInput,
-            func=self._calculate_carbon_footprint
-        )
+        # calculate_carbon_tool = StructuredTool(
+        #     name="calculate_carbon_footprint",
+        #     description="""
+        #     Calculates carbon emissions (kgCO2e) using a semantic analytical engine. 
+        #     Automatically matches messy activity names (e.g., 'British Airways flight') to standardized factors.
+        #     Covers Scope 1 (fuel), Scope 2 (electricity), and Scope 3 (travel, water, waste).
+        #     Always ask for activity type, amount, and unit.
+        #     """,
+        #     args_schema=CarbonCalculationInput,
+        #     func=self._calculate_carbon_footprint
+        # )
 
         check_readiness_tool = StructuredTool(
             name="check_bulk_readiness",
