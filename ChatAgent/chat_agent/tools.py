@@ -979,6 +979,29 @@ class ToolList:
                 if df.empty:
                     continue
                 
+                # Dynamic Header Promotion for dirty corporate sheets (e.g. title banners at the top)
+                original_cols = list(df.columns)
+                for idx in range(min(5, len(df))):
+                    row_vals = [str(x).strip().lower() for x in df.iloc[idx].values if pd.notna(x)]
+                    header_keywords = [
+                        "kwh", "amount", "total", "supplier", "month", "class", "unit", "distance", 
+                        "km", "miles", "date", "passenger", "reason", "departure", "destination", "hotel", "postcode"
+                    ]
+                    matches = sum(1 for v in row_vals if any(k in v for k in header_keywords))
+                    current_has_unnamed = any("unnamed" in str(c).lower() or pd.isna(c) for c in df.columns)
+                    
+                    if current_has_unnamed and (matches >= 2 or (matches >= 1 and any("kwh" in v or "total" in v for v in row_vals))):
+                        new_headers = []
+                        for col_idx, val in enumerate(df.iloc[idx].values):
+                            if pd.notna(val):
+                                new_headers.append(str(val).strip())
+                            else:
+                                new_headers.append(f"Unnamed: {col_idx}")
+                        df.columns = new_headers
+                        df = df.iloc[idx + 1:].reset_index(drop=True)
+                        print(f"[Tool] Promoted headers for {sheet_name} at row {idx}: {new_headers}", flush=True)
+                        break
+
                 print(f"[Tool] Inferring schema for sheet: {sheet_name}", flush=True)
                 
                 # Take a small sample to infer schema
@@ -990,8 +1013,8 @@ class ToolList:
                 Identify how to calculate carbon emissions from this data.
                 
                 Return a JSON object with:
-                - amount_column: The exact name of the column containing the numerical value to calculate emissions on (e.g. "Kilometers", "Liters", "Cost").
-                - unit: The implied or explicit unit for that amount (e.g. "km", "litres", "gbp"). If not obvious, infer it.
+                - amount_column: The exact name of the column containing the numerical value to calculate emissions on (e.g. "Kilometers", "Liters", "Cost", "kWh", "Nights").
+                - unit: The implied or explicit unit for that amount (e.g. "km", "litres", "gbp", "kWh", "nights"). If not obvious, infer it.
                 - activity_columns: A list of exact column names that help identify the specific type of transport or route (e.g., ["Vehicle Type", "Class", "Fuel", "Departure", "Destination"]). CRITICAL: DO NOT include columns containing employee names, dates, passenger names, reasons for travel, or project codes! Locations ARE helpful to determine if a flight/train is domestic or international.
                 
                 CSV Sample:
@@ -1015,6 +1038,29 @@ class ToolList:
                     unit_val = schema.get("unit", "unknown")
                     act_cols = schema.get("activity_columns", [])
                     
+                    # Dynamically compute virtual 'nights' column if 'Check in date' and 'Check out date' exist
+                    checkin_col = next((c for c in df.columns if "check in" in str(c).lower() or "check-in" in str(c).lower() or "checkin" in str(c).lower()), None)
+                    checkout_col = next((c for c in df.columns if "check out" in str(c).lower() or "check-out" in str(c).lower() or "checkout" in str(c).lower()), None)
+                    
+                    if checkin_col and checkout_col:
+                        try:
+                            # Convert to datetime and calculate diff
+                            df[checkin_col] = pd.to_datetime(df[checkin_col], errors='coerce')
+                            df[checkout_col] = pd.to_datetime(df[checkout_col], errors='coerce')
+                            df = df.dropna(subset=[checkin_col, checkout_col])
+                            df['nights'] = (df[checkout_col] - df[checkin_col]).dt.days
+                            amount_col = 'nights'
+                            unit_val = 'room per night'
+                            # Infer some good descriptive columns for Hotels
+                            hotel_col = next((c for c in df.columns if "hotel" in str(c).lower()), None)
+                            dest_col = next((c for c in df.columns if "destination" in str(c).lower()), None)
+                            act_cols = []
+                            if hotel_col: act_cols.append(hotel_col)
+                            if dest_col: act_cols.append(dest_col)
+                            if not act_cols: act_cols = [df.columns[0]]
+                        except Exception as e:
+                            print(f"[Tool] Failed to calculate virtual nights column for sheet {sheet_name}: {e}", flush=True)
+
                     if not amount_col or amount_col not in df.columns:
                         print(f"[Tool] Could not confidently find amount column for sheet {sheet_name}. Skipping.")
                         continue
@@ -1022,8 +1068,23 @@ class ToolList:
                     # 3. Apply Schema using Pandas
                     for _, row in df.iterrows():
                         try:
+                            # Check if this row is a Total/Summary row
+                            is_total_row = False
+                            for col in df.columns:
+                                if pd.notna(row[col]):
+                                    val_str = str(row[col]).strip().lower()
+                                    if val_str in ["total", "totals", "grand total", "subtotal", "sum", "total / average"]:
+                                        is_total_row = True
+                                        break
+                                    if val_str.startswith("total ") or val_str.endswith(" total"):
+                                        is_total_row = True
+                                        break
+                            if is_total_row:
+                                print(f"[Tool] Skipping summary/total row", flush=True)
+                                continue
+                                
                             amt = float(row[amount_col])
-                            if pd.isna(amt): continue
+                            if pd.isna(amt) or amt <= 0: continue
                             
                             # Construct rich activity name for semantic search
                             desc_parts = [str(row[c]) for c in act_cols if c in df.columns and pd.notna(row[c])]
