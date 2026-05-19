@@ -1,0 +1,48 @@
+## API Calls
+### Group: Dash APIs (https://api-app-441601669115.europe-west1.run.app)
+- Explore screen API [GET] /supplier
+  - Variables: userID (String)
+  - Response: List<List<DataStruct<?>>>
+- Get targets of Supplier [GET] /supplier/[supplierID]/targets
+  - Variables: supplierID (String), userID (String)
+- Get Targets for Supplier [GET] /supplier/[supplierID]/targets
+  - Variables: supplierID (String), userID (String)
+  - Response: List<List<DataStruct<?>>>
+- Upload Media [POST] /document
+  - Variables: uploaded_file (UploadedFile), userID (String)
+- Delete Media [DELETE] /document/[docPath]
+  - Variables: docPath (String), userID (String)
+- Get Media [GET] /document/[doc_path]/url?action=view
+  - Variables: doc_path (String), userID (String)
+- Get Knowledge Screen Data [GET] /uploaded-document
+  - Variables: doc_path (String), userID (String)
+  - Response: List<List<DataStruct<?>>>
+- Get Dashboard Actions [GET] /action
+  - Variables: userID (String)
+  - Response: List<List<DataStruct<?>>>
+- Delete Actions [DELETE] /action/[actionID]
+  - Variables: actionID (String), userID (String)
+  - Response: List<List<DataStruct<?>>>
+- Get Suggestions [GET] /suggestions
+  - Variables: chipType (String), userID (String)
+- Get Dependencies Actions [GET] /action/[actionID]/dependencies
+  - Variables: actionID (String), userID (String)
+- Get Unlocks Actions [GET] /action/[actionID]/unlocks
+  - Variables: actionID (String), userID (String)
+- Update Action [PUT] /action/[actionID]
+  - Variables: co2 (Integer), spend (Integer), revUnlocked (Integer), dayStart (String), dayEnd (String), actionID (String), userID (String)
+  - Body: JSON
+- Add API connection [POST] /add-api
+  - Variables: userID (String), provider (String), account_number (String), api_key (String)
+  - Body: JSON
+- Get Agent generated Document [GET] /agent-document
+  - Variables: userID (String)
+  - Response: List<List<DataStruct<?>>>
+### Standalone Endpoints
+- Agent [POST] https://ai-agent-app-441601669115.europe-west1.run.app/chat
+  - Variables: message (String), user_id (String)
+  - Body: JSON
+- Agent Stream [POST] https://ai-agent-app-441601669115.europe-west1.run.app/stream
+  - Variables: user_id (String), message (String)
+  - Body: JSON
+

@@ -1,0 +1,3 @@
+[mcp_servers.flutterflow_ai]
+command = "dart"
+args = ["run", "/home/ubuntu_akshay/multiTool-chatAgent/frontend/.flutterflow/sdk/flutterflow_ai/mcp/server.dart", "--dir", "/home/ubuntu_akshay/multiTool-chatAgent/frontend"]

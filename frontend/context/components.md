@@ -1,0 +1,67 @@
+## Components (36)
+- Chat [`Container_v3wu3syc`] — unused
+  - Params: isLoading (Boolean), textInput (String), agentResponse (String)
+- ChatRequest [`Container_3muhz2xo`] — used by: Chat
+  - Params: userInput (String)
+- ChatResponseAI [`Container_hctfr0lg`] — used by: Chat
+  - Params: aiResponse (String), isResponding (Boolean)
+- TextSkeleton [`Container_6u41frch`] — used by: ChatResponseAI
+  - Params: text (String)
+- chatModal [`Container_jdrr35dh`] — unused
+  - Params: onClose (Action), onItemSelect (Action)
+- ChatSuggestion [`Container_bf1oq608`] — unused
+- ChatItem [`Container_c6iwzxpv`] — unused
+  - Params: itemLabel (Double), onItemSelect (Action)
+- InputField [`Container_bjw29z74`] — unused
+  - Params: onNewMessage (Action), onNewFileAttached (Action)
+- FileAttachment [`Container_fgzr0qgg`] — used by: Attachment
+  - Params: fileName (String), onDelete (Action)
+- Attachment [`Container_l3dra013`] — unused
+  - Params: onFileDelete (Action)
+- EmptyChatState [`Container_0udxuy25`] — unused
+  - Params: onItemPress (Action)
+- SuggestionButton [`Container_nxv40vuf`] — used by: EmptyChatState
+  - Params: label (String), icon (WidgetProperty), onClick (Action)
+- SideBar [`Container_on16wmnh`] — used by: DashBoard_Page, Explore_Page, Home_Page, Knowledge_Page, MyProfile, Plans
+  - Params: selectedIndex (Integer)
+- StatusCompleted [`Container_viwd3i8a`] — used by: DashBoard_Page, Knowledge_Page
+- content [`Container_l942ffh8`] — used by: Home_Page
+  - Params: cmpCallBack (Action), fileUploadCallBack (Action)
+- UploadImage [`Container_gvblvxop`] — used by: content
+  - Params: callback (Action), uploadedFile (UploadedFile)
+- percent [`Container_vfoztzf4`] — used by: DashBoard_Page
+  - Params: text (String)
+- IconButton [`Container_5shcmlq2`] — used by: DashBoard_Page
+  - Params: image (ImagePath)
+- ViewMore [`Container_x0uknog2`] — used by: DashBoard_Page, Knowledge_Page
+  - Params: status (String), actionID (String), isFrom (Enum<isFromPageNames>), docPath (String), actionData (DataStruct<DashboardDataType>)
+- ETC [`Container_y5tgzkcs`] — used by: DashBoard_Page
+  - Params: statusValue (String)
+- Subscription [`Container_z5ffui7p`] — unused
+- knowledgeView [`Container_7lgfrvvs`] — used by: KnowledgeCmp, ProfileCmp
+  - Params: docPath (String)
+- ExploreCmp [`Container_k5kve08r`] — used by: Explore_Page
+  - Params: supplierData (DataStruct<ExploreData>)
+- KnowledgeCmp [`Container_cvdfkyzf`] — used by: Knowledge_Page
+  - Params: knowledgeData (DataStruct<knowledgeScreenData>)
+- StatusNotStarted [`Container_ivfrtr3q`] — used by: DashBoard_Page
+- StatusInProgress [`Container_a92fwnde`] — used by: DashBoard_Page
+- ViewMoreCopy [`Container_9l0bhigv`] — unused
+- UpdateDashboardAction [`Container_x43radgd`] — used by: ViewMore
+  - Params: data (DataStruct<DashboardDataType>)
+- ViewDoc [`Container_3pbn7p63`] — used by: ViewMore, knowledgeView
+  - Params: docURL (String)
+- ShowEmptyText [`Container_p8exhkbj`] — used by: DashBoard_Page, Explore_Page, Knowledge_Page
+  - Params: textToShow (String)
+- ProfileCmp [`Container_zpixz186`] — used by: MyProfile, ViewDashBoardData
+- ViewDashBoardData [`Container_7nuoophv`] — used by: ViewMore
+  - Params: data (DataStruct<DashboardDataType>)
+- ViewChatActionCard [`Container_4ramvp2f`] — used by: Home_Page
+  - Params: data (List<DataStruct<?>>)
+- API [`Container_0omp694b`] — used by: Knowledge_Page
+  - Params: apiName (String), apiInfo (String)
+- AddAPIConnection [`Container_jpcsqc1q`] — used by: API
+  - Params: provider (String)
+- ButtonCard [`Container_ftvdon9d`] — unused
+  - Params: cardTitle (String), options (List<String>), actionKey (String), messageDocId (String), isAnswered (Boolean)
+

@@ -1,0 +1,47 @@
+## Pages (14)
+- landing-page [`Scaffold_d6bd82u8`] → dash-beta
+  - (no incoming navigation)
+  - Navigates to: login, signup
+- login [`Scaffold_m7up1xyd`]
+  - (no incoming navigation)
+  - Navigates to: Home_Page, Plans, initial-information-1, initial-information-2, landing-page, reset-password, signup, verify-email
+- signup [`Scaffold_ooirdf1e`]
+  - (no incoming navigation)
+  - Navigates to: Home_Page, Plans, initial-information-1, initial-information-2, landing-page, login, verify-email
+- verify-email [`Scaffold_t6jb674m`] → verify-email
+  - (no incoming navigation)
+  - Navigates to: initial-information-1, signup
+- initial-information-1 [`Scaffold_m1bqoxd1`] → initial-information-1
+  - (no incoming navigation)
+  - Navigates to: initial-information-2
+- reset-password [`Scaffold_hcayi1cl`] → reset-password
+  - (no incoming navigation)
+  - Navigates to: login
+- initial-information-2 [`Scaffold_2e1spjzb`] → initial-information-2
+  - (no incoming navigation)
+  - Navigates to: Home_Page
+  - Queries: messages
+- figma_export_test [`Scaffold_k2vndzyy`]
+  - (no incoming navigation)
+- Explore_Page [`Scaffold_wzpy078i`]
+  - (no incoming navigation)
+  - Navigates to: Plans
+  - Components: ExploreCmp, ShowEmptyText, SideBar
+- Knowledge_Page [`Scaffold_2htoo08u`]
+  - (no incoming navigation)
+  - Navigates to: Plans
+  - Components: API, KnowledgeCmp, ShowEmptyText, SideBar, StatusCompleted
+  - State: uploadedFile (UploadedFile)
+- Home_Page [`Scaffold_2nh6qxmi`]
+  - (no incoming navigation)
+  - Components: SideBar, ViewChatActionCard, content
+- DashBoard_Page [`Scaffold_7oy2u45c`] [initial]
+  - Components: ETC, IconButton, ShowEmptyText, SideBar, StatusCompleted, StatusInProgress, StatusNotStarted, percent
+  - State: selectedValue (String), index (Integer)
+- Plans [`Scaffold_mfyxvevq`]
+  - (no incoming navigation)
+  - Components: SideBar
+- MyProfile [`Scaffold_h8aq9oxy`]
+  - (no incoming navigation)
+  - Components: ProfileCmp, SideBar
+
