@@ -132,28 +132,11 @@ class agent:
         )
         return agent
 
-    def _extract_text_content(self, content):
-        """Try to extract JSON dictionary, fallback to structured text"""
-        
-        # Convert complex content (list/blocks) to a single string first
-        raw_string = ""
-        if isinstance(content, str):
-            raw_string = content
-        elif isinstance(content, list):
-            text_parts = []
-            for block in content:
-                if isinstance(block, dict) and block.get('type') == 'text':
-                    text_parts.append(block.get('text', ''))
-            raw_string = '\n\n'.join(text_parts)
-        else:
-            raw_string = str(content)
-
     def _extract_text_content(self, content: any) -> dict:
-        """Extracts text and UI actions from the model's response."""
+        """Extracts text, UI component, and UI actions from the model's response."""
         if not content:
-            return {"message": "", "ui_actions": []}
+            return {"message": "", "ui_actions": [], "ui_component": None}
 
-        # Robust content handling: Extract text from lists/blocks if needed
         if isinstance(content, list):
             text_parts = []
             for block in content:
@@ -165,49 +148,58 @@ class agent:
         else:
             raw_string = str(content)
 
-        # Look for the new [UI_ACTIONS] tags
-        ui_actions_match = re.search(r'\[UI_ACTIONS\](.*?)\[/UI_ACTIONS\]', raw_string, re.DOTALL)
-        ui_actions = []
         clean_message = raw_string
+        ui_actions = []
+        ui_component = None
 
+        # Extract [UI_COMPONENT] block
+        component_match = re.search(r'\[UI_COMPONENT\](.*?)\[/UI_COMPONENT\]', clean_message, re.DOTALL)
+        if component_match:
+            clean_message = clean_message.replace(component_match.group(0), "").strip()
+            try:
+                ui_component = json.loads(component_match.group(1).strip())
+            except json.JSONDecodeError:
+                print(f"Error decoding UI component JSON: {component_match.group(1)}")
+
+        # Extract [UI_ACTIONS] block
+        ui_actions_match = re.search(r'\[UI_ACTIONS\](.*?)\[/UI_ACTIONS\]', clean_message, re.DOTALL)
         if ui_actions_match:
             json_str = ui_actions_match.group(1).strip()
-            # Remove the [UI_ACTIONS] block from the clean message
-            clean_message = raw_string.replace(ui_actions_match.group(0), "").strip()
+            clean_message = clean_message.replace(ui_actions_match.group(0), "").strip()
             try:
-                # Try standard JSON first
                 data = json.loads(json_str)
                 ui_actions = data.get("ui_actions", [])
             except json.JSONDecodeError:
                 try:
-                    # Fallback: Replace single quotes with double quotes (common LLM error)
-                    fixed_json = json_str.replace("'", '"')
-                    data = json.loads(fixed_json)
+                    data = json.loads(json_str.replace("'", '"'))
                     ui_actions = data.get("ui_actions", [])
                 except Exception:
                     print(f"Error decoding UI actions JSON: {json_str}")
 
         # Fallback for legacy whole-JSON responses
-        elif raw_string.strip().startswith("{") and raw_string.strip().endswith("}"):
+        elif clean_message.strip().startswith("{") and clean_message.strip().endswith("}"):
             try:
-                data = json.loads(raw_string)
+                data = json.loads(clean_message)
                 return {
                     "message": data.get("message", ""),
-                    "ui_actions": data.get("ui_actions", [])
+                    "ui_actions": data.get("ui_actions", []),
+                    "ui_component": ui_component
                 }
             except json.JSONDecodeError:
                 try:
-                    data = json.loads(raw_string.replace("'", '"'))
+                    data = json.loads(clean_message.replace("'", '"'))
                     return {
                         "message": data.get("message", ""),
-                        "ui_actions": data.get("ui_actions", [])
+                        "ui_actions": data.get("ui_actions", []),
+                        "ui_component": ui_component
                     }
                 except Exception:
                     pass
 
         return {
             "message": clean_message,
-            "ui_actions": ui_actions
+            "ui_actions": ui_actions,
+            "ui_component": ui_component
         }
     
     def _get_daily_session_id(self, user_id: str) -> str:
@@ -402,30 +394,26 @@ class agent:
         # Start streaming and collect full response
         full_text_response = ""
         stream_buffer = ""
-        tag = "[UI_ACTIONS]"
-        tag_detected = False
+        # Both tags signal the start of non-streamable content — stop streaming when either appears
+        SENTINEL_TAGS = ["[UI_COMPONENT]", "[UI_ACTIONS]"]
+        sentinel_detected = False
 
         try:
             async for chunk in self.agent.astream({"messages": recent_messages}, stream_mode="messages"):
-                # Identify the message and metadata to filter out Tool messages
-                # LangChain usually yields (Message, Metadata) tuples
                 if isinstance(chunk, tuple) and len(chunk) >= 2:
                     msg, metadata = chunk
-                    # Filter: Only process chunks from the 'model' node
                     if metadata.get("langgraph_node") != "model":
                         continue
                 else:
-                    # Fallback for non-tuple chunks
                     msg = chunk
                     if hasattr(msg, "type") and msg.type != "ai":
                         continue
 
                 if not hasattr(msg, "content"):
                     continue
-                
+
                 raw_content = msg.content
-                
-                # If content is a list (e.g. multimodal or with thought signatures), extract text
+
                 if isinstance(raw_content, list):
                     text_parts = []
                     for part in raw_content:
@@ -436,62 +424,57 @@ class agent:
                     if text_parts:
                         raw_content = "".join(text_parts)
                     else:
-                        # If no text parts found (just internal metadata), skip adding to the final message
-                        pass
                         continue
 
                 if isinstance(raw_content, str) and raw_content:
-                    # Update status on the first chunk
                     if not full_text_response:
                         asyncio.create_task(asyncio.to_thread(firestore.set_status, "agent_thinking"))
 
                     full_text_response += raw_content
-                    
-                    if not tag_detected:
-                        stream_buffer += raw_content
-                        
-                        if tag in stream_buffer:
-                            tag_detected = True
-                            pre_tag_text = stream_buffer.split(tag)[0]
-                            if pre_tag_text:
-                                yield f"data: {json.dumps({'message': pre_tag_text})}\n\n"
-                            stream_buffer = "" 
-                        else:
-                            # Check for partial matches at the end of the buffer
-                            overlap_found = False
-                            for i in range(len(tag) - 1, 0, -1):
-                                if stream_buffer.endswith(tag[:i]):
-                                    text_to_yield = stream_buffer[:-i]
-                                    if text_to_yield:
-                                        yield f"data: {json.dumps({'message': text_to_yield})}\n\n"
-                                    stream_buffer = stream_buffer[-i:]
-                                    overlap_found = True
-                                    break
-                            
-                            if not overlap_found:
-                                if stream_buffer:
-                                    yield f"data: {json.dumps({'message': stream_buffer})}\n\n"
-                                stream_buffer = ""
 
-        
+                    if not sentinel_detected:
+                        stream_buffer += raw_content
+
+                        # Check if any sentinel tag is fully present in the buffer
+                        found_sentinel = next((t for t in SENTINEL_TAGS if t in stream_buffer), None)
+                        if found_sentinel:
+                            sentinel_detected = True
+                            pre_sentinel = stream_buffer.split(found_sentinel)[0]
+                            if pre_sentinel:
+                                yield f"data: {json.dumps({'message': pre_sentinel})}\n\n"
+                            stream_buffer = ""
+                        else:
+                            # Yield everything up to the last `[` — all sentinels start with `[`
+                            # so anything before the last `[` is safe to stream immediately
+                            last_bracket = stream_buffer.rfind('[')
+                            if last_bracket == -1:
+                                yield f"data: {json.dumps({'message': stream_buffer})}\n\n"
+                                stream_buffer = ""
+                            elif last_bracket > 0:
+                                yield f"data: {json.dumps({'message': stream_buffer[:last_bracket]})}\n\n"
+                                stream_buffer = stream_buffer[last_bracket:]
+                            # else last_bracket == 0: whole buffer may be a partial sentinel, keep buffering
+
         except Exception as e:
             print(f"[Error] astream_res failed: {e}")
             yield f"data: {json.dumps({'message': 'I encountered an error while streaming. Please try again.', 'ui_actions': []})}\n\n"
 
         await asyncio.to_thread(firestore.set_status, "finishing")
 
-        # Extract final message and UI actions
+        # Parse the complete response for UI blocks
         processed = self._extract_text_content(full_text_response)
-        
-        # If we reached the end but have NO message content, yield a final error
+
         if not processed.get("message") and not full_text_response.strip():
-             yield f"data: {json.dumps({'message': 'I could not generate a response. Please try again.', 'ui_actions': []})}\n\n"
-             return
+            yield f"data: {json.dumps({'message': 'I could not generate a response. Please try again.', 'ui_actions': []})}\n\n"
+            return
 
-        # 1. Yield UI actions as a final chunk
-        yield f"data: {json.dumps({'ui_actions': processed.get('ui_actions', [])})}\n\n"
+        # Yield UI blocks as a single final event
+        final_event = {"ui_actions": processed.get("ui_actions", [])}
+        if processed.get("ui_component"):
+            final_event["ui_component"] = processed["ui_component"]
+        yield f"data: {json.dumps(final_event)}\n\n"
 
-        # 2. Save complete message to Firestore
+        # Save complete message to Firestore
         if processed.get("message"):
             asyncio.create_task(asyncio.to_thread(firestore.add_ai_message, processed["message"]))
         

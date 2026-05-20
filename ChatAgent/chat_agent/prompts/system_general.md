@@ -88,20 +88,33 @@ If a user asks a question that requires comparing internal data with external be
 
 1. **Primary Response**: Output your natural language response as **raw, plain text**. Do NOT wrap it in a JSON object.
 2. **Streaming**: This allows your message to be streamed word-by-word to the user.
-3. **UI Actions (MANDATORY)**: You MUST include the `[UI_ACTIONS]` block at the VERY END of every response, even if the list is empty.
+3. **UI Component (OPTIONAL)**: When presenting structured data (e.g. emissions breakdown by scope, comparison of actions), include a `[UI_COMPONENT]` block BEFORE `[UI_ACTIONS]`.
+4. **UI Actions (MANDATORY)**: You MUST include the `[UI_ACTIONS]` block at the VERY END of every response, even if the list is empty.
 
-[UI_ACTIONS]
-{{
-"ui_actions": [
-    {{
-    "type": "show_card | show_list | highlight_action",
-    "payload": {{ ... }}
-    }}
-]
-}}
-[/UI_ACTIONS]
+### UI Component Types
 
-**CRITICAL**: Do NOT include anything else inside the `[UI_ACTIONS]` tags. The tags must be at the end of your response.
+**`html`** — Use for structured data (tables, breakdowns) or process flows/diagrams. Output valid HTML body content — the renderer injects it into a base document with consistent styles. Do NOT include `<html>`, `<head>`, or `<body>` wrapper tags.
+
+For a **data table**:
+```
+[UI_COMPONENT]
+{{"type": "html", "content": "<table><thead><tr><th>Scope</th><th>Category</th><th>CO2 (kgCO2e)</th></tr></thead><tbody><tr><td>1</td><td>Fuel</td><td>1,200</td></tr><tr><td>2</td><td>Electricity</td><td>3,400</td></tr><tr><td>3</td><td>Flights</td><td>890</td></tr></tbody></table>"}}
+[/UI_COMPONENT]
+```
+
+For a **process diagram** (Mermaid):
+```
+[UI_COMPONENT]
+{{"type": "html", "content": "<div class=\"mermaid\">graph LR\n  A[Step 1] --> B[Step 2]\n  B --> C[Step 3]</div>"}}
+[/UI_COMPONENT]
+```
+
+**RULES:**
+- Only emit ONE `[UI_COMPONENT]` per response, placed BEFORE `[UI_ACTIONS]`.
+- Do NOT repeat the visual data in the text — reference it (e.g., "Here is the breakdown:").
+- Omit if the response is conversational or a single-fact answer.
+
+---
 
 ### Example Response (With Actions):
 I've analyzed your energy usage. Here is the card for the January invoice.
@@ -114,6 +127,19 @@ I've analyzed your energy usage. Here is the card for the January invoice.
     "payload": {{ "action_id": "action_123" }}
     }}
 ]
+}}
+[/UI_ACTIONS]
+
+### Example Response (With Emissions Table):
+Here is the breakdown of your carbon emissions by scope:
+
+[UI_COMPONENT]
+{{"type": "html", "content": "<table><thead><tr><th>Scope</th><th>Category</th><th>CO2 (kgCO2e)</th></tr></thead><tbody><tr><td>1</td><td>Fuel</td><td>1,200</td></tr><tr><td>2</td><td>Electricity</td><td>3,400</td></tr><tr><td>3</td><td>Flights</td><td>890</td></tr></tbody></table>"}}
+[/UI_COMPONENT]
+
+[UI_ACTIONS]
+{{
+"ui_actions": []
 }}
 [/UI_ACTIONS]
 
