@@ -243,6 +243,42 @@ class FireStoreChat():
                 "Almost there...",
                 "Wrapping up the insights...",
                 "Finalizing the details..."
+            ],
+            "google_search": [
+                "Searching the web...",
+                "Checking the latest sources online...",
+                "Looking this up on Google...",
+                "Scanning current information..."
+            ],
+            "vertex_search": [
+                "Searching your documents...",
+                "Looking through your uploaded files...",
+                "Checking your sustainability records...",
+                "Digging into your data..."
+            ],
+            "document_read": [
+                "Reading your document...",
+                "Extracting text from the file...",
+                "Processing the document with OCR...",
+                "Parsing the file content..."
+            ],
+            "octopus_fetch": [
+                "Fetching live energy data from Octopus...",
+                "Pulling your latest consumption data...",
+                "Connecting to Octopus Energy...",
+                "Retrieving your meter readings..."
+            ],
+            "carbon_file_read": [
+                "Reading your emissions file...",
+                "Parsing the spreadsheet structure...",
+                "Identifying activity columns and units...",
+                "Preparing your data for analysis..."
+            ],
+            "carbon_calculation": [
+                "Running carbon calculations... this may take a moment",
+                "Matching activities to emission factors in BigQuery...",
+                "Crunching your emissions data...",
+                "Calculating CO2e across all activities..."
             ]
         }
 

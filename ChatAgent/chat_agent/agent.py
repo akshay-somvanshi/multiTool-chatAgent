@@ -4,6 +4,7 @@ import vertexai
 from langchain.agents import create_agent
 from langchain.agents.middleware import wrap_model_call, ModelRequest
 from chat_agent.firestore import FireStoreChat
+from chat_agent.tools import _firestore_ctx
 
 import os
 import json
@@ -380,8 +381,9 @@ class agent:
         total_start = time.perf_counter()
         session_id = self._get_daily_session_id(user_id)
 
-        # Initialize Firestore
+        # Initialize Firestore and expose it to tool calls via ContextVar
         firestore = self._init_FireStore(user_id, session_id)
+        _firestore_ctx.set(firestore)
         await asyncio.to_thread(firestore.set_status, "history")
 
         # Load context/history
