@@ -18,6 +18,14 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import pandas as pd
 import io
 import json
+import contextvars
+
+# Per-request Firestore context — set by the agent at the start of each request.
+# ContextVar is safe for concurrent async tasks: each task (and threads it spawns)
+# gets an independent copy, so simultaneous users don't interfere.
+_firestore_ctx: contextvars.ContextVar = contextvars.ContextVar(
+    'firestore_ctx', default=None
+)
 
 from chat_agent.api_client import api_client
 from chat_agent.core.exceptions import APIError
@@ -154,10 +162,20 @@ class ToolList:
             location="global"
         )
 
+    def _emit_status(self, key: str) -> None:
+        """Write a live status update to Firestore via the per-request context."""
+        fs = _firestore_ctx.get()
+        if fs is not None:
+            try:
+                fs.set_status(key)
+            except Exception as e:
+                print(f"[Status] Failed to emit status '{key}': {e}", flush=True)
+
     def _logged_search(
         self,
         query
     ):
+        self._emit_status("google_search")
         print(f"Google called with query: {query}")
         result = self.search_wrapper.run(query)
         print(f"Search result: {result[:200]}...")
@@ -251,6 +269,7 @@ class ToolList:
         self,
         document_url
     ):
+        self._emit_status("document_read")
         print(f"[Tool] Starting document_read for: {document_url}", flush=True)
         """
         Reads and extracts text from a document (PDF, TXT, CSV).
@@ -538,13 +557,14 @@ class ToolList:
 
     def vertex_search(self, query: str, user_id: str):
         """
-        Search user's sustainability documents (bills, emissions data, etc.) 
+        Search user's sustainability documents (bills, emissions data, etc.)
         to answer specific questions about their energy or environmental impact.
-        
+
         Args:
             query: Natural language question (e.g. 'What was my electricity cost in March?')
             user_id: The ID of the user whose documents to search.
         """
+        self._emit_status("vertex_search")
         # The full resource name of the search app serving config
         serving_config = f"projects/{self.project_id}/locations/{self.location_vertexAI}/collections/default_collection/engines/{self.engine_id}/servingConfigs/default_config"
 
@@ -653,6 +673,7 @@ class ToolList:
 
     def fetch_octopus_usage(self, user_id: str, days_back: int = 7, period_from: str = None, period_to: str = None):
         """Fetches electricity usage and cost for a user from Octopus Energy. Supports specific date ranges."""
+        self._emit_status("octopus_fetch")
         try:
             print(f"[Tool] Fetching energy data from Octopus for user: {user_id}, range: {period_from} to {period_to}")
             # 1. Fetch energy settings from Firestore
@@ -1009,6 +1030,7 @@ class ToolList:
         Reads Excel/CSV from GCS and processes via BigQuery analytical engine.
         Uses Gemini to dynamically infer the schema for each sheet — sheets are processed in parallel.
         """
+        self._emit_status("carbon_file_read")
         try:
             print(f"[Tool] Processing structured file from GCS: {gcs_uri}", flush=True)
             content = self._download_from_gcs(gcs_uri)
@@ -1046,6 +1068,7 @@ class ToolList:
                 return {"error": "Could not extract any valid activities from the file. Please check the format."}
 
             print(f"[Tool] Consolidated {len(all_activities)} activities. Sending to BigQuery engine.", flush=True)
+            self._emit_status("carbon_calculation")
             return self._calculate_emissions_batch_bq(all_activities, user_id)
 
         except Exception as e:
@@ -1129,10 +1152,10 @@ class ToolList:
 
     def get_tools(self) -> list[Tool]:
         google_search_tool = Tool(
-            name="google_search",  # The name the LLM calls
+            name="google_search",
             description="Search Google for current events and real-time facts.",
             args_schema=google_search_input,
-            func=self.search_wrapper.run,
+            func=self._logged_search,
         )
 
         read_actions_tool = Tool(
@@ -1202,15 +1225,15 @@ class ToolList:
             func=self.calculate_sustainability_roi
         )
 
-        industry_guidelines_tool = StructuredTool(
-            name="get_industry_guidelines",
-            description="""
-            Fetches industry-specific procurement policies and recommended actions.
-            Use this tool to understand the constraints and standard actions for the user's specific industry.
-            """,
-            args_schema=IndustryInfoInput,
-            func=self.get_industry_guidelines
-        )
+        # industry_guidelines_tool = StructuredTool(
+        #     name="get_industry_guidelines",
+        #     description="""
+        #     Fetches industry-specific procurement policies and recommended actions.
+        #     Use this tool to understand the constraints and standard actions for the user's specific industry.
+        #     """,
+        #     args_schema=IndustryInfoInput,
+        #     func=self.get_industry_guidelines
+        # )
 
         generate_pdf_tool = StructuredTool(
             name="generate_pdf_report",
@@ -1258,7 +1281,7 @@ class ToolList:
             vertex_search_tool, 
             octopus_fetch_tool, 
             calculate_roi_tool, 
-            industry_guidelines_tool, 
+            # industry_guidelines_tool, 
             generate_pdf_tool, 
             check_readiness_tool, 
             calculate_bulk_file_tool
