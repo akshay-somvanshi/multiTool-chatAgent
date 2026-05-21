@@ -132,6 +132,23 @@ class agent:
         )
         return agent
 
+    @staticmethod
+    def _strip_markdown(text: str) -> str:
+        """Convert common markdown syntax to plain text for display in a plain Text widget."""
+        # Bold: **text** or __text__ → text
+        text = re.sub(r'\*\*(.+?)\*\*', r'\1', text)
+        text = re.sub(r'__(.+?)__', r'\1', text)
+        # Italic: *text* or _text_ → text  (single * not followed by another *)
+        text = re.sub(r'\*([^*\n]+?)\*', r'\1', text)
+        text = re.sub(r'(?<!\w)_([^_\n]+?)_(?!\w)', r'\1', text)
+        # Headings: ## Heading → Heading
+        text = re.sub(r'^#{1,6}\s+', '', text, flags=re.MULTILINE)
+        # Inline code: `code` → code
+        text = re.sub(r'`([^`\n]+?)`', r'\1', text)
+        # Horizontal rule: --- or *** → (empty)
+        text = re.sub(r'^[-*]{3,}\s*$', '', text, flags=re.MULTILINE)
+        return text
+
     def _extract_text_content(self, content: any) -> dict:
         """Extracts text, UI component, and UI actions from the model's response."""
         if not content:
@@ -181,7 +198,7 @@ class agent:
             try:
                 data = json.loads(clean_message)
                 return {
-                    "message": data.get("message", ""),
+                    "message": self._strip_markdown(data.get("message", "")),
                     "ui_actions": data.get("ui_actions", []),
                     "ui_component": ui_component
                 }
@@ -189,7 +206,7 @@ class agent:
                 try:
                     data = json.loads(clean_message.replace("'", '"'))
                     return {
-                        "message": data.get("message", ""),
+                        "message": self._strip_markdown(data.get("message", "")),
                         "ui_actions": data.get("ui_actions", []),
                         "ui_component": ui_component
                     }
@@ -197,11 +214,11 @@ class agent:
                     pass
 
         return {
-            "message": clean_message,
+            "message": self._strip_markdown(clean_message),
             "ui_actions": ui_actions,
             "ui_component": ui_component
         }
-    
+
     def _get_daily_session_id(self, user_id: str) -> str:
         """Create one session per day"""
         today = datetime.now().strftime('%Y%m%d')
@@ -441,17 +458,17 @@ class agent:
                             sentinel_detected = True
                             pre_sentinel = stream_buffer.split(found_sentinel)[0]
                             if pre_sentinel:
-                                yield f"data: {json.dumps({'message': pre_sentinel})}\n\n"
+                                yield f"data: {json.dumps({'message': self._strip_markdown(pre_sentinel)})}\n\n"
                             stream_buffer = ""
                         else:
                             # Yield everything up to the last `[` — all sentinels start with `[`
                             # so anything before the last `[` is safe to stream immediately
                             last_bracket = stream_buffer.rfind('[')
                             if last_bracket == -1:
-                                yield f"data: {json.dumps({'message': stream_buffer})}\n\n"
+                                yield f"data: {json.dumps({'message': self._strip_markdown(stream_buffer)})}\n\n"
                                 stream_buffer = ""
                             elif last_bracket > 0:
-                                yield f"data: {json.dumps({'message': stream_buffer[:last_bracket]})}\n\n"
+                                yield f"data: {json.dumps({'message': self._strip_markdown(stream_buffer[:last_bracket])})}\n\n"
                                 stream_buffer = stream_buffer[last_bracket:]
                             # else last_bracket == 0: whole buffer may be a partial sentinel, keep buffering
 
