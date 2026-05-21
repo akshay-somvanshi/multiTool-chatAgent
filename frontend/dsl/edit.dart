@@ -32,6 +32,182 @@ Future<void> main(List<String> args) async {
 // string termination inside the r''' DSL string.
 // ---------------------------------------------------------------------------
 
+// WorkingShimmerText widget — shimmer text that streams the live agent status
+// from Firestore instead of showing a static "Working..." string.
+// Firestore path: messages/{userId}/sessions/{YYYYMMDD}  field: status
+// The userId is passed in from FlutterFlow as `currentUserUid`.
+// Falls back to widget.text ("Working...") until the first Firestore snapshot arrives.
+const _workingShimmerTextCode = r'''
+import 'package:cloud_firestore/cloud_firestore.dart';
+
+class WorkingShimmerText extends StatefulWidget {
+  const WorkingShimmerText({
+    super.key,
+    this.width,
+    this.height,
+    this.text,
+    this.fontSize,
+    this.userId,
+  });
+
+  final double? width;
+  final double? height;
+  final String? text;
+  final double? fontSize;
+  final String? userId;
+
+  @override
+  State<WorkingShimmerText> createState() => _WorkingShimmerTextState();
+}
+
+class _WorkingShimmerTextState extends State<WorkingShimmerText>
+    with TickerProviderStateMixin {
+  late AnimationController _controller;
+
+  /// Session ID matches the backend: YYYYMMDD in local time.
+  String get _sessionId {
+    final now = DateTime.now();
+    final mm = now.month.toString().padLeft(2, '0');
+    final dd = now.day.toString().padLeft(2, '0');
+    return '${now.year}$mm$dd';
+  }
+
+  Stream<DocumentSnapshot<Map<String, dynamic>>>? get _statusStream {
+    final uid = widget.userId;
+    if (uid == null || uid.isEmpty) return null;
+    return FirebaseFirestore.instance
+        .collection('messages')
+        .doc(uid)
+        .collection('sessions')
+        .doc(_sessionId)
+        .snapshots();
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = AnimationController(
+      vsync: this,
+      duration: const Duration(seconds: 2),
+    )..repeat();
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  Widget _shimmer(String text) {
+    return AnimatedBuilder(
+      animation: _controller,
+      builder: (context, child) {
+        return ShaderMask(
+          shaderCallback: (bounds) {
+            return LinearGradient(
+              begin: Alignment(-1.0 + (_controller.value * 2), 0),
+              end: const Alignment(1.0, 0),
+              colors: const [
+                Color(0xFF9AA0A6),
+                Color(0xFFE5E7EB),
+                Color(0xFF9AA0A6),
+              ],
+            ).createShader(bounds);
+          },
+          child: child,
+        );
+      },
+      child: Text(
+        text,
+        style: TextStyle(
+          fontSize: widget.fontSize ?? 18.0,
+          fontWeight: FontWeight.w600,
+          color: const Color(0xFF9AA0A6),
+        ),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final fallback = widget.text ?? 'Working...';
+    final stream = _statusStream;
+
+    if (stream == null) return _shimmer(fallback);
+
+    return StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
+      stream: stream,
+      builder: (context, snapshot) {
+        String status = fallback;
+        if (snapshot.hasData && snapshot.data!.exists) {
+          final data = snapshot.data!.data();
+          final raw = data?['status'];
+          if (raw is String && raw.isNotEmpty) status = raw;
+        }
+        return _shimmer(status);
+      },
+    );
+  }
+}
+''';
+
+// MarkdownMessage widget — renders agent message text with markdown formatting.
+// flutter_markdown is already a project dependency (^0.7.4); no new pub dep needed.
+// MarkdownBody is intrinsically sized (no fixed height) so it flows naturally in
+// a Column beside the HtmlViewer component below it.
+const _markdownMessageCode = r'''
+import 'package:flutter_markdown/flutter_markdown.dart';
+
+class MarkdownMessage extends StatelessWidget {
+  const MarkdownMessage({
+    super.key,
+    this.width,
+    this.height, // accepted by FlutterFlow but unused — MarkdownBody auto-sizes vertically
+    required this.message,
+  });
+
+  final double? width;
+  final double? height;
+  final String message;
+
+  @override
+  Widget build(BuildContext context) {
+    // null/infinite width → fill available horizontal space.
+    final effectiveWidth =
+        (width != null && width!.isFinite) ? width! : null;
+
+    final bodyStyle = FlutterFlowTheme.of(context).bodyMedium;
+
+    return SizedBox(
+      width: effectiveWidth,
+      child: MarkdownBody(
+        data: message,
+        selectable: true,
+        softLineBreak: true,
+        styleSheet: MarkdownStyleSheet.fromTheme(Theme.of(context)).copyWith(
+          p: bodyStyle,
+          strong: bodyStyle.copyWith(fontWeight: FontWeight.bold),
+          em: bodyStyle.copyWith(fontStyle: FontStyle.italic),
+          listBullet: bodyStyle,
+          blockquote: bodyStyle.copyWith(
+            color: bodyStyle.color?.withOpacity(0.7),
+          ),
+          code: bodyStyle.copyWith(
+            fontFamily: 'monospace',
+            fontSize:
+                bodyStyle.fontSize != null ? bodyStyle.fontSize! - 1 : 13.0,
+          ),
+          codeblockDecoration: BoxDecoration(
+            color: FlutterFlowTheme.of(context).primaryBackground,
+            borderRadius: BorderRadius.circular(8.0),
+          ),
+        ),
+      ),
+    );
+  }
+}
+''';
+
 // ignore_for_file: prefer_adjacent_string_concatenation
 // Uses flutter_html (already a project dependency) instead of webview_flutter.
 // On Flutter Web, webview_flutter renders via an <iframe> platform view which
@@ -74,22 +250,12 @@ class HtmlViewer extends StatelessWidget {
     // JSON path extractors can deliver escaped \n sequences instead of real newlines.
     final normalized = content.replaceAll(r'\n', '\n');
 
-    return Container(
+    return SizedBox(
       width: effectiveWidth,
       height: effectiveHeight,
-      decoration: BoxDecoration(
-        color: FlutterFlowTheme.of(context).secondaryBackground,
-        borderRadius: BorderRadius.circular(12.0),
-        border: Border.all(
-          color: FlutterFlowTheme.of(context).alternate,
-          width: 1.0,
-        ),
-      ),
-      child: ClipRRect(
-        borderRadius: BorderRadius.circular(12.0),
-        child: SingleChildScrollView(
-          padding: const EdgeInsets.all(12.0),
-          child: Html(
+      child: SingleChildScrollView(
+        padding: const EdgeInsets.all(4.0),
+        child: Html(
             data: normalized,
             // Required in flutter_html 3.x — table tags are not built-in.
             extensions: const [TableHtmlExtension()],
@@ -123,8 +289,7 @@ class HtmlViewer extends StatelessWidget {
             },
           ),
         ),
-      ),
-    );
+      );
   }
 }
 ''';
@@ -142,28 +307,64 @@ void buildEditFlow(App app) {
     if (findPubDependency(project, name: 'flutter_html_table') == null) {
       addPubDependency(project, name: 'flutter_html_table', version: '^3.0.0');
     }
+    // flutter_markdown is already in pubspec.yaml (^0.7.4) — no extra dep needed.
   });
 
   // 2. Add or update the unified HtmlViewer widget.
-  //    MarkdownTableViewer and MermaidViewer are left in place because existing
-  //    page layouts still reference them. Once the FlutterFlow conditional is
-  //    updated to point to HtmlViewer, those old widgets can be removed manually.
   app.raw((project) {
     try {
-      // Succeeds on re-runs once the widget exists in the project.
       updateCustomWidget(
         project,
         name: 'HtmlViewer',
         code: _htmlViewerCode,
-        description: 'Renders agent HTML content in a WebView with a consistent base stylesheet',
+        description: 'Renders agent HTML content natively via flutter_html (no WebView)',
       );
     } catch (_) {
-      // First run: widget does not exist yet.
       addCustomWidget(
         project,
         name: 'HtmlViewer',
         code: _htmlViewerCode,
-        description: 'Renders agent HTML content in a WebView with a consistent base stylesheet',
+        description: 'Renders agent HTML content natively via flutter_html (no WebView)',
+      );
+    }
+  });
+
+  // 3. Update WorkingShimmerText to stream live agent status from Firestore.
+  app.raw((project) {
+    try {
+      updateCustomWidget(
+        project,
+        name: 'WorkingShimmerText',
+        code: _workingShimmerTextCode,
+        description: 'Shimmer text that streams the live agent status from Firestore',
+      );
+    } catch (_) {
+      addCustomWidget(
+        project,
+        name: 'WorkingShimmerText',
+        code: _workingShimmerTextCode,
+        description: 'Shimmer text that streams the live agent status from Firestore',
+      );
+    }
+  });
+
+  // 4. Add or update the MarkdownMessage widget.
+  //    Replace the plain Text widget on Home_Page (AI message bubble) with this
+  //    widget so that **bold**, *italic*, lists, and code blocks render properly.
+  app.raw((project) {
+    try {
+      updateCustomWidget(
+        project,
+        name: 'MarkdownMessage',
+        code: _markdownMessageCode,
+        description: 'Renders AI message text with markdown formatting (bold, italic, lists, code)',
+      );
+    } catch (_) {
+      addCustomWidget(
+        project,
+        name: 'MarkdownMessage',
+        code: _markdownMessageCode,
+        description: 'Renders AI message text with markdown formatting (bold, italic, lists, code)',
       );
     }
   });
