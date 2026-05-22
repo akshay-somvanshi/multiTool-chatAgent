@@ -849,8 +849,8 @@ class ToolList:
             
             # 3. Generate Audit Trail
             timestamp = datetime.now().strftime("%Y%md%H%M%S")
-            audit_filename = f"audit_logs/audit_{safe_user_id}_{timestamp}.csv"
-            audit_bucket_name = f"{self.project_id}-reports"
+            audit_filename = f"users/{user_id}/reports/audit_{timestamp}.csv"
+            audit_bucket_name = "dash-beta-e61d0.firebasestorage.app"
             
             # Upload to GCS
             storage_client = storage.Client(project=self.project_id)
