@@ -14,6 +14,7 @@ from urllib.parse import urlparse, parse_qs, unquote
 from google.cloud import storage
 from google.cloud import bigquery
 from datetime import datetime
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import pandas as pd
 import io
@@ -265,6 +266,27 @@ class ToolList:
         response.raise_for_status()
         return response.content
     
+    def _excel_to_text(self, content: bytes) -> str:
+        """
+        Reads all sheets from an Excel file and returns their combined text.
+        Each sheet is converted to CSV in parallel, then joined with a header.
+        """
+        sheets = pd.read_excel(io.BytesIO(content), sheet_name=None)
+        non_empty = {name: df for name, df in sheets.items() if not df.empty}
+        if not non_empty:
+            return "(Excel file contained no data)"
+
+        print(f"[Tool] Converting {len(non_empty)} sheet(s) to text in parallel", flush=True)
+
+        def sheet_to_csv(item):
+            name, df = item
+            return f"=== Sheet: {name} ===\n{df.to_csv(index=False)}"
+
+        with ThreadPoolExecutor(max_workers=min(len(non_empty), 5)) as executor:
+            results = list(executor.map(sheet_to_csv, non_empty.items()))
+
+        return "\n\n".join(results)
+
     def _document_read(
         self,
         document_url
@@ -295,10 +317,9 @@ class ToolList:
                     print(f"Skipping Document AI for text-based file", flush=True)
                     return self._download_from_gcs(document_url)
                 elif '.xlsx' in document_url.lower():
-                    print(f"Reading Excel file for text extraction", flush=True)
+                    print(f"Reading Excel file (all sheets) for text extraction", flush=True)
                     content = self._download_from_gcs(document_url)
-                    df = pd.read_excel(io.BytesIO(content))
-                    return df.to_csv(index=False)
+                    return self._excel_to_text(content)
                 else:
                     image_content = self._download_from_gcs(document_url)
             elif document_url.startswith("http://") or document_url.startswith("https://"):
@@ -308,8 +329,7 @@ class ToolList:
                     return self._download_from_http(document_url).decode('utf-8', errors='replace')
                 elif '.xlsx' in document_url.lower():
                     content = self._download_from_http(document_url)
-                    df = pd.read_excel(io.BytesIO(content))
-                    return df.to_csv(index=False)
+                    return self._excel_to_text(content)
                 
                 image_content = self._download_from_http(document_url)
             else:
@@ -948,17 +968,23 @@ class ToolList:
         JSON:
         """
 
-        try:
-            response = self.genai_client.models.generate_content(
-                model="gemini-3-flash-preview",
-                contents=prompt,
-                config={"response_mime_type": "application/json"}
-            )
-            print(f"[Tool] Schema for sheet '{sheet_name}' generated", flush=True)
-            schema = json.loads(response.text)
-        except Exception as llm_err:
-            print(f"[Tool] Error inferring schema for '{sheet_name}': {llm_err}", flush=True)
-            return []
+        # Retry logic to handle Gemini API rate limits (e.g. 429 quota exceeded)
+        schema = None
+        for attempt in range(3):
+            try:
+                response = self.genai_client.models.generate_content(
+                    model="gemini-3-flash-preview",
+                    contents=prompt,
+                    config={"response_mime_type": "application/json"}
+                )
+                print(f"[Tool] Schema for sheet '{sheet_name}' generated on attempt {attempt+1}", flush=True)
+                schema = json.loads(response.text)
+                break
+            except Exception as llm_err:
+                print(f"[Tool] Error inferring schema for '{sheet_name}' (attempt {attempt+1}): {llm_err}", flush=True)
+                if attempt == 2:
+                    return []
+                time.sleep(2 ** attempt)
 
         amount_col = schema.get("amount_column")
         unit_val = schema.get("unit", "unknown")
@@ -987,14 +1013,17 @@ class ToolList:
             return []
 
         activities = []
-        for _, row in df.iterrows():
+        columns = df.columns.tolist()
+        
+        # Optimize performance by bypassing df.iterrows()
+        for row in df.to_dict('records'):
             try:
                 # Skip summary/total rows
                 is_total_row = any(
                     str(row[col]).strip().lower() in {"total", "totals", "grand total", "subtotal", "sum", "total / average"}
                     or str(row[col]).strip().lower().startswith("total ")
                     or str(row[col]).strip().lower().endswith(" total")
-                    for col in df.columns if pd.notna(row[col])
+                    for col in columns if pd.notna(row[col])
                 )
                 if is_total_row:
                     continue
@@ -1003,7 +1032,7 @@ class ToolList:
                 if pd.isna(amt) or amt <= 0:
                     continue
 
-                desc_parts = [str(row[c]) for c in act_cols if c in df.columns and pd.notna(row[c])]
+                desc_parts = [str(row[c]) for c in act_cols if c in columns and pd.notna(row[c])]
                 activity_name = f"{sheet_name} - " + " - ".join(desc_parts) if desc_parts else sheet_name
 
                 if any(t in sheet_name.lower() or t in activity_name.lower() for t in ["flight", "plane", "aviation", "air"]):
