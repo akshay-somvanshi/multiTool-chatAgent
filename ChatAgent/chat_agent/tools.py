@@ -1150,6 +1150,11 @@ class ToolList:
                     "Waste": ["waste", "recycling", "trash"]
                 }
                 
+                # Dynamically register expected categories as keywords
+                for exp_cat in expected_categories:
+                    if exp_cat not in keywords:
+                        keywords[exp_cat] = [exp_cat.lower().strip()]
+                
                 for cat, keys in keywords.items():
                     if any(k in filename.lower() for k in keys):
                         category = cat
