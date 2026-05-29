@@ -131,7 +131,6 @@ class BulkProcessInput(BaseModel):
 
 class ToolList:
     def __init__(self):
-        self.search_wrapper = GoogleSearchAPIWrapper()
         self.project_id = os.getenv("GOOGLE_PROJECT_ID")
         self.location = os.getenv("GOOGLE_LOCATION")
         self.location_vertexAI = "eu"
@@ -178,7 +177,9 @@ class ToolList:
     ):
         self._emit_status("google_search")
         print(f"Google called with query: {query}")
-        result = self.search_wrapper.run(query)
+        # Create a fresh wrapper to avoid httplib2 SSL socket reuse bugs on Cloud Run
+        fresh_wrapper = GoogleSearchAPIWrapper()
+        result = fresh_wrapper.run(query)
         print(f"Search result: {result[:200]}...")
         return result
 
@@ -758,19 +759,58 @@ class ToolList:
         """
         try:
             print(f"[Tool] Generating PDF report for {company_name}: {report_type}", flush=True)
-            pdf = FPDF()
+            
+            # Custom PDF Class for ESG formatting
+            class ESGReportPDF(FPDF):
+                def header(self):
+                    # Logo
+                    base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+                    logo_path = os.path.join(base_dir, "chat_agent", "data", "logo.png")
+                    try:
+                        self.image(logo_path, 10, 8, 40)
+                    except Exception as e:
+                        print(f"Could not load logo: {e}")
+                    
+                    # Align vertically with logo and right-align the dynamic report type
+                    self.set_y(12)
+                    self.set_font('helvetica', 'B', 12)
+                    self.set_text_color(5, 150, 105) # Dash Green #059669
+                    self.cell(0, 10, report_type.upper(), 0, 0, 'R')
+                    self.ln(25)
+
+                def footer(self):
+                    self.set_y(-15)
+                    self.set_font('helvetica', 'I', 8)
+                    self.set_text_color(128, 128, 128)
+                    self.cell(0, 10, f'Page {self.page_no()}/{{nb}}', 0, 0, 'C')
+                    
+                    # Date alignment to the right
+                    date_str = datetime.now().strftime("%B %d, %Y")
+                    # Move X to right edge minus margin and text width
+                    self.set_x(-60) 
+                    self.cell(50, 10, f'Generated on {date_str}', 0, 0, 'R')
+
+            pdf = ESGReportPDF()
+            pdf.alias_nb_pages()
             pdf.add_page()
             
-            # Title
-            pdf.set_font("helvetica", "B", 16)
-            pdf.cell(0, 10, title, new_x="LMARGIN", new_y="NEXT", align="C")
-            pdf.ln(10)
+            # Report Title
+            pdf.set_font("helvetica", "B", 18)
+            pdf.set_text_color(33, 37, 41)
+            pdf.cell(0, 10, title, new_x="LMARGIN", new_y="NEXT", align="L")
+            pdf.ln(2)
             
-            # Content
-            pdf.set_font("helvetica", "", 12)
-            # Replace unsupported characters to avoid FPDF errors
+            # Subtitle (Company & Report Type)
+            pdf.set_font("helvetica", "I", 12)
+            pdf.set_text_color(100, 100, 100)
+            pdf.cell(0, 10, f"Prepared for: {company_name} | Type: {report_type}", new_x="LMARGIN", new_y="NEXT", align="L")
+            pdf.ln(8)
+            
+            # Main Content
+            pdf.set_font("helvetica", "", 11)
+            pdf.set_text_color(50, 50, 50)
             clean_content = content.encode('latin-1', 'replace').decode('latin-1')
-            pdf.multi_cell(0, 10, clean_content)
+            pdf.multi_cell(0, 6, clean_content)
             
             # Sanitize and construct filename
             safe_company = company_name.replace(" ", "").replace("/", "_")

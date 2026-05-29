@@ -65,7 +65,8 @@ class agent:
             max_tokens=self.model_kwargs.get('max_output_tokens'),
             top_p=self.model_kwargs.get('top_p'),
             top_k=self.model_kwargs.get('top_k'),
-            location="global"
+            location="global",
+            api_transport="rest"
         ).bind_tools(self.tool_list)
 
         self.advanced_llm = ChatVertexAI(
@@ -74,14 +75,16 @@ class agent:
             max_tokens=self.model_kwargs.get('max_output_tokens'),
             top_p=self.model_kwargs.get('top_p'),
             top_k=self.model_kwargs.get('top_k'),
-            location="global"
+            location="global",
+            api_transport="rest"
         ).bind_tools(self.tool_list)
 
         # Use Flash for summaries to save time and cost
         self.summary_llm = ChatVertexAI(
             model_name="gemini-3-flash-preview",
             temperature=0.0, # Deterministic for summaries
-            location="global"
+            location="global",
+            api_transport="rest"
         )
 
         # Enable switching to pro model 
