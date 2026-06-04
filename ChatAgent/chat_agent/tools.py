@@ -122,12 +122,11 @@ class CarbonCalculationInput(BaseModel):
     unit: str = Field(description="The unit for the activity (e.g., 'kWh', 'litres', 'passenger-km', 'tonnes')")
 
 class BulkReadinessInput(BaseModel):
-    gcs_uri: str = Field(description="The Gcs URI (folder) to check for documents (e.g., gs://bucket/user/uploads/)")
+    user_id: str = Field(description="The user ID whose uploads folder should be checked")
     expected_categories: list[str] = Field(default=[], description="Optional list of categories the user expects to find (e.g. ['Electricity', 'Fuel'])")
 
 class BulkProcessInput(BaseModel):
-    gcs_uri: str = Field(description="The GCS URI (folder) to process documents from")
-    user_id: str = Field(description="The user ID to associate results with")
+    user_id: str = Field(description="The user ID whose uploaded file should be processed")
 
 class ToolList:
     def __init__(self):
@@ -249,6 +248,8 @@ class ToolList:
             return content
             
         except Exception as e:
+            if url.startswith("gs://"):
+                raise  # gs:// URIs cannot be fetched over HTTP
             print(f"GCS download failed: {e}. Falling back to HTTP.", flush=True)
             return self._download_from_http(url)
 
@@ -906,20 +907,91 @@ class ToolList:
             """
             query_job = self.bq_client.query(query)
             df = query_job.to_dataframe()
-            
+            print(f"[Tool] BQ result: {len(df)} matched rows from {len(activities)} input activities", flush=True)
+            if not df.empty:
+                print(f"[Tool] BQ columns: {df.columns.tolist()}", flush=True)
+                print(f"[Tool] BQ sample:\n{df.head(2).to_string()}", flush=True)
+
+            if df.empty:
+                return {
+                    "total_emissions_kgCO2e": 0,
+                    "breakdown": [],
+                    "audit_sample": [],
+                    "status": "no_matches",
+                    "processed_count": len(activities),
+                    "message": (
+                        "No emission factors matched any of the activities. "
+                        "This usually means the units in the file don't match any known emission factor units. "
+                        "Check that unit values (e.g. kWh, km, litres) are standard."
+                    ),
+                }
+
             # 3. Generate Audit Trail
-            timestamp = datetime.now().strftime("%Y%md%H%M%S")
-            audit_filename = f"users/{user_id}/reports/audit_{timestamp}.csv"
+            timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
+            audit_filename = f"users/{user_id}/reports/audit_{timestamp}.xlsx"
             audit_bucket_name = "dash-beta-e61d0.firebasestorage.app"
-            
+
+            # Build a human-readable Excel file
+            column_rename = {
+                "row_id": "Row ID",
+                "original_context": "Context",
+                "search_activity": "Activity",
+                "original_amount": "Amount",
+                "original_unit": "Unit",
+                "matched_factor": "Matched Emission Factor",
+                "conversion_factor": "Conversion Factor (kgCO2e per unit)",
+                "scope": "Scope",
+                "factor_category": "Category",
+                "co2_kg": "CO2e (kg)",
+            }
+            audit_df = df.rename(columns=column_rename)
+
+            excel_buffer = io.BytesIO()
+            with pd.ExcelWriter(excel_buffer, engine="openpyxl") as writer:
+                audit_df.to_excel(writer, index=False, sheet_name="Audit Trail")
+                ws = writer.sheets["Audit Trail"]
+
+                from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+                header_font = Font(bold=True, color="FFFFFF")
+                header_fill = PatternFill("solid", fgColor="2D6A4F")
+                center_align = Alignment(horizontal="center", vertical="center", wrap_text=True)
+                thin_border = Border(
+                    left=Side(style="thin"),
+                    right=Side(style="thin"),
+                    top=Side(style="thin"),
+                    bottom=Side(style="thin"),
+                )
+
+                for col_idx, cell in enumerate(ws[1], start=1):
+                    cell.font = header_font
+                    cell.fill = header_fill
+                    cell.alignment = center_align
+                    cell.border = thin_border
+                    # Auto-fit column width based on header and data
+                    col_letter = cell.column_letter
+                    max_len = len(str(cell.value)) if cell.value else 10
+                    for data_cell in ws.iter_rows(min_row=2, min_col=col_idx, max_col=col_idx):
+                        for dc in data_cell:
+                            if dc.value is not None:
+                                max_len = max(max_len, len(str(dc.value)))
+                            dc.border = thin_border
+                    ws.column_dimensions[col_letter].width = min(max_len + 4, 50)
+
+                ws.freeze_panes = "A2"
+
+            excel_bytes = excel_buffer.getvalue()
+
             # Upload to GCS
             storage_client = storage.Client(project=self.project_id)
             bucket = storage_client.bucket(audit_bucket_name)
             if not bucket.exists():
                 bucket = storage_client.create_bucket(audit_bucket_name)
-                
+
             blob = bucket.blob(audit_filename)
-            blob.upload_from_string(df.to_csv(index=False), content_type="text/csv")
+            blob.upload_from_string(
+                excel_bytes,
+                content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            )
             audit_uri = f"gs://{audit_bucket_name}/{audit_filename}"
             
             # 4. Format results
@@ -1094,49 +1166,71 @@ class ToolList:
         print(f"[Tool] Sheet '{sheet_name}': extracted {len(activities)} activities", flush=True)
         return activities
 
-    def _calculate_emissions_from_file_bq(self, gcs_uri: str, user_id: str) -> dict:
+    def _calculate_emissions_from_file_bq(self, user_id: str) -> dict:
         """
-        Reads Excel/CSV from GCS and processes via BigQuery analytical engine.
-        Uses Gemini to dynamically infer the schema for each sheet — sheets are processed in parallel.
+        Reads all Excel/CSV files from the user's GCS uploads folder and processes
+        them via the BigQuery analytical engine. All files are processed together.
         """
         self._emit_status("carbon_file_read")
         try:
-            print(f"[Tool] Processing structured file from GCS: {gcs_uri}", flush=True)
-            content = self._download_from_gcs(gcs_uri)
+            bucket_name = f"{self.project_id}.firebasestorage.app"
+            prefix = f"users/{user_id}/uploads/"
+            storage_client = storage.Client(project=self.project_id)
+            blobs = [
+                b for b in storage_client.bucket(bucket_name).list_blobs(prefix=prefix)
+                if not b.name.endswith("/") and b.name.lower().endswith((".xlsx", ".csv"))
+            ]
+            if not blobs:
+                return {"error": "No Excel or CSV file found in your uploads folder. Please upload a file first before running the calculation."}
 
-            # Read file into sheets dict
-            if gcs_uri.lower().endswith(".xlsx"):
-                sheets = pd.read_excel(io.BytesIO(content), sheet_name=None)
-            else:
-                df = pd.read_csv(io.StringIO(content) if isinstance(content, str) else io.BytesIO(content))
-                sheets = {"Data": df}
+            print(f"[Tool] Found {len(blobs)} file(s) to process: {[b.name.split('/')[-1] for b in blobs]}", flush=True)
 
-            non_empty_sheets = {name: df for name, df in sheets.items() if not df.empty}
-            if not non_empty_sheets:
-                return {"error": "All sheets in the file are empty."}
+            # Build a flat dict of {label: DataFrame} across all files and their sheets
+            all_sheets: dict[str, pd.DataFrame] = {}
+            for blob in blobs:
+                filename = blob.name.split("/")[-1]
+                gcs_uri = f"gs://{bucket_name}/{blob.name}"
+                print(f"[Tool] Reading: {gcs_uri}", flush=True)
+                try:
+                    content = self._download_from_gcs(gcs_uri)
+                    if gcs_uri.lower().endswith(".xlsx"):
+                        file_sheets = pd.read_excel(io.BytesIO(content), sheet_name=None)
+                    else:
+                        file_sheets = {"Data": pd.read_csv(
+                            io.StringIO(content) if isinstance(content, str) else io.BytesIO(content)
+                        )}
+                    for sheet_name, df in file_sheets.items():
+                        if not df.empty:
+                            label = f"{filename} — {sheet_name}" if len(file_sheets) > 1 else filename
+                            all_sheets[label] = df
+                except Exception as e:
+                    print(f"[Tool] Failed to read '{filename}': {e}", flush=True)
 
-            print(f"[Tool] Processing {len(non_empty_sheets)} sheet(s) in parallel", flush=True)
+            if not all_sheets:
+                return {"error": "All uploaded files are empty or could not be read."}
 
-            # Infer schema and extract rows for all sheets concurrently
+            print(f"[Tool] Processing {len(all_sheets)} sheet(s) across all files in parallel", flush=True)
+
+            # Infer schema and extract activities for all sheets concurrently
             all_activities = []
-            max_workers = min(len(non_empty_sheets), 5)
+            max_workers = min(len(all_sheets), 5)
             with ThreadPoolExecutor(max_workers=max_workers) as executor:
                 futures = {
-                    executor.submit(self._process_sheet, name, df): name
-                    for name, df in non_empty_sheets.items()
+                    executor.submit(self._process_sheet, label, df): label
+                    for label, df in all_sheets.items()
                 }
                 for future in as_completed(futures):
-                    sheet_name = futures[future]
+                    label = futures[future]
                     try:
                         activities = future.result()
                         all_activities.extend(activities)
                     except Exception as e:
-                        print(f"[Tool] Sheet '{sheet_name}' failed: {e}", flush=True)
+                        print(f"[Tool] Sheet '{label}' failed: {e}", flush=True)
 
             if not all_activities:
-                return {"error": "Could not extract any valid activities from the file. Please check the format."}
+                return {"error": "Could not extract any valid activities from the uploaded files. Please check the file format."}
 
-            print(f"[Tool] Consolidated {len(all_activities)} activities. Sending to BigQuery engine.", flush=True)
+            print(f"[Tool] Consolidated {len(all_activities)} activities across all files. Sending to BigQuery engine.", flush=True)
             self._emit_status("carbon_calculation")
             return self._calculate_emissions_batch_bq(all_activities, user_id)
 
@@ -1145,21 +1239,16 @@ class ToolList:
             return {"error": str(e)}
 
 
-    def _check_bulk_readiness(self, gcs_uri: str, expected_categories: list[str] = []) -> dict:
+    def _check_bulk_readiness(self, user_id: str, expected_categories: list[str] = []) -> dict:
         """
         Scans a GCS folder to check if all necessary documents are available before bulk processing.
         """
         try:
+            bucket_name = f"{self.project_id}.firebasestorage.app"
+            prefix = f"users/{user_id}/uploads/"
+            gcs_uri = f"gs://{bucket_name}/{prefix}"
             print(f"[Tool] Checking bulk readiness for: {gcs_uri}", flush=True)
-            
-            # Parse GCS URI
-            if not gcs_uri.startswith("gs://"):
-                return {"error": "Invalid URI. Must start with gs://"}
-            
-            parts = gcs_uri.replace("gs://", "").split("/", 1)
-            bucket_name = parts[0]
-            prefix = parts[1] if len(parts) > 1 else ""
-            
+
             storage_client = storage.Client(project=self.project_id)
             bucket = storage_client.bucket(bucket_name)
             # List blobs with the given prefix
@@ -1203,6 +1292,7 @@ class ToolList:
                 
                 file_summary.append({
                     "filename": filename,
+                    "gcs_uri": f"gs://{bucket_name}/{blob.name}",
                     "category_guess": category,
                     "size_kb": round(size_kb, 2),
                     "last_modified": blob.updated.strftime("%Y-%m-%d")
@@ -1263,12 +1353,13 @@ class ToolList:
         document_read_tool = StructuredTool(
             name="document_read",
             description="""
-            Extract text from files (PDF, TXT, CSV). 
+            Extract text from files (PDF, TXT, CSV, XLSX).
             Use this to read specific sustainability reports, utility bills (PDF), or Octopus API data logs (TXT/CSV).
-            Accepts: Public URLs, Firebase URLs, or GCS Console URLs (storage.cloud.google.com).
+            For user-uploaded files, ALWAYS use the exact gcs_uri returned by check_bulk_readiness — never construct or guess a GCS URL yourself.
+            Accepts: Public URLs, Firebase URLs, GCS Console URLs (storage.cloud.google.com), or gs:// URIs.
             """,
             args_schema=document_read_input,
-            func=lambda document_url: self._document_read(document_url), 
+            func=lambda document_url: self._document_read(document_url),
         )
 
         vertex_search_tool = StructuredTool(
