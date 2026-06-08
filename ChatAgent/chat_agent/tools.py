@@ -96,15 +96,9 @@ class RemoveActionInput(BaseModel):
     user_id: str = Field(description="User ID")
     action_id: str = Field(description="Unique action identifier of type 'action_003'")
 
-class SustainabilityROIInput(BaseModel):
+class ProcurementROIInput(BaseModel):
     user_id: str = Field(description="User ID")
-    new_revenue: float = Field(description="New revenue generated this year from sustainability initiatives (£)")
-    retained_revenue: float = Field(description="Revenue retained this year due to sustainability initiatives (£)")
-    ops_cost_reduction: float = Field(description="Operational costs reduced this year (£)")
-    risk_minimized: float = Field(description="Estimated value of business risk minimized (£)")
-    ops_cost_reduction_5y: float = Field(description="Total operational costs reduced in the next 5 years (£)")
-    financing_cost_diff: float = Field(description="Difference in cost of financing (Year 1 - Year 0) (£)")
-    spend_this_year: float = Field(description="Total spend on sustainability this year (£)")
+    action_description: str = Field(description="Description of the sustainability action being evaluated for procurement eligibility")
 
 class IndustryInfoInput(BaseModel):
     industry_name: str = Field(description="The name of the industry to look up guidelines for (e.g., 'Retail', 'Manufacturing')")
@@ -409,50 +403,115 @@ class ToolList:
                 "actions": []
             }
 
-    def calculate_sustainability_roi(
-        self,
-        user_id: str,
-        new_revenue: float,
-        retained_revenue: float,
-        ops_cost_reduction: float,
-        risk_minimized: float,
-        ops_cost_reduction_5y: float,
-        financing_cost_diff: float,
-        spend_this_year: float
-    ) -> dict:
+    def calculate_procurement_roi(self, user_id: str, action_description: str) -> dict:
         """
-        Calculates the Return on Investment (ROI) for a sustainability action using a weighted formula.
-        The weights (probabilities) are fetched from the system configuration.
+        Calculates ROI as a procurement eligibility score: how many industry procurement
+        policies does this action satisfy? Policies are stored in BigQuery and sourced from
+        publicly available industry procurement standards.
         """
         try:
-            # Fetch probabilities from Firestore
+            # Fetch user's industry from Firestore
             session_id = f"roi_{datetime.now().strftime('%Y%m%d')}"
-            firestore = FireStoreChat(user_id, session_id)
-            p = firestore.get_roi_probabilities()
+            fs = FireStoreChat(user_id, session_id)
+            user_doc = fs.user_ref.get()
+            if not user_doc.exists:
+                return {"error": "User not found"}
 
-            # Apply formula
-            # ROI = {(New Revenue * P1) + (Retained Revenue * P2) + (Ops cost reduced * P3) + 
-            #        (Risk minimized * P4) + (Ops costs reduced 5y * P5) + (Diff in financing cost * P6)} - Spend
-            
-            revenue_unlocked = (
-                (new_revenue * p["p1_new_revenue"]) +
-                (retained_revenue * p["p2_retained_revenue"]) +
-                (ops_cost_reduction * p["p3_ops_cost_reduction"]) +
-                (risk_minimized * p["p4_risk_minimized"]) +
-                (ops_cost_reduction_5y * p["p5_ops_cost_reduction_5y"]) +
-                (financing_cost_diff * p["p6_financing_cost_diff"])
+            user_data = user_doc.to_dict()
+            industry = user_data.get("company_industry", "").strip()
+            if not industry:
+                return {"error": "User's industry is not set in their profile"}
+
+            # Fetch procurement policies for this industry from BigQuery
+            dataset_id = "dash_beta_database"
+            table_id = "procurement_policies"
+            query = f"""
+                SELECT policy_id, policy_name, policy_description, category, policy_source
+                FROM `{self.project_id}.{dataset_id}.{table_id}`
+                WHERE LOWER(industry) = @industry
+                ORDER BY category, policy_name
+            """
+            job_config = bigquery.QueryJobConfig(
+                query_parameters=[
+                    bigquery.ScalarQueryParameter("industry", "STRING", industry.lower())
+                ]
             )
-            
-            roi = revenue_unlocked - spend_this_year
+            results = list(self.bq_client.query(query, job_config=job_config).result())
+
+            if not results:
+                return {
+                    "error": f"No procurement policies found for industry: {industry}",
+                    "hint": "Run scripts/populate_procurement_policies.py to seed policies for this industry."
+                }
+
+            policies = [
+                {
+                    "policy_id": row.policy_id,
+                    "policy_name": row.policy_name,
+                    "policy_description": row.policy_description,
+                    "category": row.category,
+                }
+                for row in results
+            ]
+
+            prompt = f"""You are evaluating a sustainability action against procurement policies for the {industry} industry.
+
+Action being evaluated:
+{action_description}
+
+Procurement policies to assess:
+{json.dumps(policies, indent=2)}
+
+For each policy, determine whether completing this action would directly satisfy or tick off that policy requirement.
+Mark 'satisfied' as true if the action clearly addresses the policy criterion (even partially).
+
+Return ONLY a valid JSON object in this exact structure:
+{{
+  "evaluations": [
+    {{
+      "policy_id": "<id>",
+      "policy_name": "<name>",
+      "category": "<category>",
+      "satisfied": true or false,
+      "reason": "<one sentence explanation>"
+    }}
+  ]
+}}"""
+
+            for attempt in range(3):
+                try:
+                    response = self.genai_client.models.generate_content(
+                        model="gemini-3-flash-preview",
+                        contents=prompt,
+                        config={"response_mime_type": "application/json"}
+                    )
+                    evaluations = json.loads(response.text).get("evaluations", [])
+                    break
+                except Exception as llm_err:
+                    print(f"[ROI] LLM eval attempt {attempt + 1} failed: {llm_err}", flush=True)
+                    if attempt == 2:
+                        return {"error": f"LLM evaluation failed: {llm_err}"}
+                    time.sleep(2 ** attempt)
+
+            satisfied = [e for e in evaluations if e.get("satisfied")]
+            unsatisfied = [e for e in evaluations if not e.get("satisfied")]
+            total = len(evaluations)
+            score_pct = round(len(satisfied) / total * 100, 1) if total > 0 else 0.0
+
+            print(f"[ROI] {industry}: {len(satisfied)}/{total} policies satisfied ({score_pct}%)", flush=True)
 
             return {
-                "estimated_revenue_unlocked": round(revenue_unlocked, 2),
-                "total_roi": round(roi, 2),
-                "applied_weights": p,
-                "currency": "GBP"
+                "industry": industry,
+                "action_evaluated": action_description,
+                "total_policies": total,
+                "policies_satisfied": len(satisfied),
+                "eligibility_score_pct": score_pct,
+                "satisfied_policies": satisfied,
+                "unsatisfied_policies": unsatisfied,
             }
+
         except Exception as e:
-            print(f"ROI Calculation failed: {e}", flush=True)
+            print(f"[ROI] Procurement ROI calculation failed: {e}", flush=True)
             return {"error": str(e)}
 
     def get_industry_guidelines(self, industry_name: str) -> dict:
@@ -1380,14 +1439,16 @@ class ToolList:
         )
 
         calculate_roi_tool = StructuredTool(
-            name="calculate_sustainability_roi",
+            name="calculate_procurement_roi",
             description="""
-            Calculates the financial ROI for a sustainability action. 
-            Use this tool BEFORE calling add_action if you need to determine the 'estimated_revenue_unlocked'.
-            You must estimate the formula components (new revenue, retained revenue, etc.) based on the action details.
+            Calculates a procurement eligibility score for a sustainability action by checking how many
+            publicly available industry procurement policies it satisfies. Returns a percentage score,
+            a list of satisfied policies, and a list of unsatisfied policies.
+            Use this when the user asks about the ROI or business value of a sustainability action,
+            or before adding an action to show how it improves procurement eligibility.
             """,
-            args_schema=SustainabilityROIInput,
-            func=self.calculate_sustainability_roi
+            args_schema=ProcurementROIInput,
+            func=self.calculate_procurement_roi
         )
 
         # industry_guidelines_tool = StructuredTool(

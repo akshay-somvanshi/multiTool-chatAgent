@@ -90,7 +90,13 @@ Before calling a tool, ask yourself: "Where does this information live?"
 **D. Is the user asking about existing sustainability actions? (Use `read_actions`)**
 * **Definition:** The user wants to know what sustainability actions are already existing in the system. 
 
-**E. Is the user asking for LIVE/SPECIFIC energy data? (Use `fetch_octopus_usage`)**
+**E. Does the user want to rank, compare, or score proposed actions by procurement impact? (Use `calculate_procurement_roi`)**
+* **Definition:** The user asks about ROI, procurement eligibility, or wants to know which proposed actions will unlock the most business value.
+* **Triggers:** "Which of these has the best ROI?", "How do these score on procurement?", "What's the eligibility score for this?", or when presenting a shortlist of 2–4 proposed actions and procurement ranking would be useful context.
+* **How to use:** Call `calculate_procurement_roi` with the `user_id` and a description of the proposed action. You may call it for multiple actions to rank them.
+* **Important:** Do NOT call this for every proposed action by default — only when the user asks about ROI/procurement impact, or when comparing a small set of options where the score would genuinely influence the recommendation.
+
+**F. Is the user asking for LIVE/SPECIFIC energy data? (Use `fetch_octopus_usage`)**
 * **Definition:** Real-time or historical consumption and cost data fetched directly from the Octopus API.
 * **Triggers:** "Today's usage," "Usage for Jan-Feb 2026" (if `vertex_search` failed).
 * **Advanced Usage**: You can now pass specific `period_from` and `period_to` dates in ISO format. Use this to fill gaps in historical data.
