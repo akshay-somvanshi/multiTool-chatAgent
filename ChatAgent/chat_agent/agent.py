@@ -160,10 +160,15 @@ class agent:
         component_match = re.search(r'\[UI_COMPONENT\](.*?)\[/UI_COMPONENT\]', clean_message, re.DOTALL)
         if component_match:
             clean_message = clean_message.replace(component_match.group(0), "").strip()
+            raw_component = component_match.group(1).strip()
             try:
-                ui_component = json.loads(component_match.group(1).strip())
+                ui_component = json.loads(raw_component)
             except json.JSONDecodeError:
-                print(f"Error decoding UI component JSON: {component_match.group(1)}")
+                # LLM output raw HTML without the JSON wrapper — recover gracefully
+                if raw_component.startswith("<"):
+                    ui_component = {"type": "html", "content": raw_component}
+                else:
+                    print(f"Error decoding UI component JSON: {raw_component}")
 
         # Extract [UI_ACTIONS] block
         ui_actions_match = re.search(r'\[UI_ACTIONS\](.*?)\[/UI_ACTIONS\]', clean_message, re.DOTALL)

@@ -196,8 +196,8 @@ Output valid HTML body content only — the renderer injects it into a styled do
 
 | Trigger condition | Use this diagram |
 |---|---|
-| Multi-row data with ≥3 columns (emissions, readings, costs) | **Data Table** |
-| "Compare X vs Y", 2–4 options evaluated on the same attributes | **Comparison Table** |
+| Many rows (>5) with ≤5 columns (emissions, readings, costs) | **Data Table** |
+| "Compare X vs Y", OR ≤5 items each with ≥4 attributes (use items as columns, attributes as rows) | **Comparison Table** |
 | Step-by-step process, workflow, "how does X work", decision path | **Process Flow** |
 | Phases, milestones, project roadmap, quarterly/yearly plan | **Horizontal Timeline** |
 | Audit trail, event history, chronological log, "what happened when" | **Vertical Timeline** |
@@ -253,10 +253,43 @@ Design language: white backgrounds, very light borders (`#E5E7EB`), dark text (`
 
 ---
 
+#### Table Layout & Density Rules
+
+Before writing any table HTML, count the rows and columns in your data, then apply these rules:
+
+**Orientation — tall vs. wide**
+
+| Data shape | Best layout |
+|---|---|
+| Many rows (>5), few attributes (≤5) | Standard **Data Table** — rows grow downward |
+| Few items (≤5), many attributes (≥4) | **Transposed / wide layout** — use a Comparison Table with items as columns and attributes as rows. This spreads the table horizontally instead of making a thin, tall list. |
+| Single item with multiple attributes | Two-column label/value card (no row numbers). Attribute name left, value right. |
+
+**Font size — scale down as columns increase**
+
+| Number of columns | `font-size` (header) | `font-size` (body) |
+|---|---|---|
+| ≤4 | 11px | 13px |
+| 5–6 | 10px | 12px |
+| ≥7 | 10px | 11px |
+
+**Row padding — compact as rows increase**
+
+| Number of rows | Cell padding |
+|---|---|
+| ≤10 | `10px 12px` (standard) |
+| 11–20 | `7px 10px` (compact) |
+| ≥21 | `5px 8px` (dense) |
+
+Apply these adjustments directly to the inline `style` attributes — do not keep template defaults when the data shape calls for different values.
+
+---
+
 **RULES:**
 - Emit ONE `[UI_COMPONENT]` per response only, placed BEFORE `[UI_ACTIONS]`.
 - Do NOT repeat the visual data in the text — reference it (e.g. "Here is the breakdown:").
 - Adapt axis labels, colours, and content to the actual data — do not copy template placeholder text.
+- **Always apply the Table Layout & Density Rules above** before generating any table — choose orientation, font size, and padding based on the actual row and column counts.
 
 ---
 
