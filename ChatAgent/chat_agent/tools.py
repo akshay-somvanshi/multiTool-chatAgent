@@ -100,6 +100,9 @@ class ProcurementROIInput(BaseModel):
     user_id: str = Field(description="User ID")
     action_description: str = Field(description="Description of the sustainability action being evaluated for procurement eligibility")
 
+class PolicyGapsInput(BaseModel):
+    user_id: str = Field(description="User ID to check policy gaps for")
+
 class IndustryInfoInput(BaseModel):
     industry_name: str = Field(description="The name of the industry to look up guidelines for (e.g., 'Retail', 'Manufacturing')")
 
@@ -536,6 +539,165 @@ Return ONLY a valid JSON object in this exact structure:
 
         except Exception as e:
             print(f"[ROI] Procurement ROI calculation failed: {e}", flush=True)
+            return {"error": str(e)}
+
+    def get_policy_gaps(self, user_id: str) -> dict:
+        """
+        Identifies which procurement policies for the user's industry are NOT yet covered
+        by any of their existing sustainability actions. Returns a prioritised gap list,
+        coverage percentage, and top 5 gaps to address first.
+        """
+        try:
+            session_id = f"gaps_{datetime.now().strftime('%Y%m%d')}"
+            fs = FireStoreChat(user_id, session_id)
+            user_doc = fs.user_ref.get()
+            if not user_doc.exists:
+                return {"error": "User not found"}
+
+            user_data = user_doc.to_dict()
+            industry = user_data.get("company_industry", "").strip()
+            if not industry:
+                return {"error": "User's industry is not set in their profile"}
+
+            dataset_id = "dash_beta_database"
+            table_id = "procurement_policies"
+            query = f"""
+                SELECT policy_id, policy_name, policy_description, category, policy_source
+                FROM `{self.project_id}.{dataset_id}.{table_id}`
+                WHERE LOWER(industry) = @industry
+                ORDER BY category, policy_name
+            """
+            job_config = bigquery.QueryJobConfig(
+                query_parameters=[
+                    bigquery.ScalarQueryParameter("industry", "STRING", industry.lower())
+                ]
+            )
+            results = list(self.bq_client.query(query, job_config=job_config).result())
+
+            if not results:
+                return {
+                    "error": f"No procurement policies found for industry: {industry}",
+                    "hint": "Run scripts/populate_procurement_policies.py to seed policies for this industry."
+                }
+
+            policies = [
+                {
+                    "policy_id": row.policy_id,
+                    "policy_name": row.policy_name,
+                    "policy_description": row.policy_description,
+                    "category": row.category,
+                    "policy_source": row.policy_source,
+                }
+                for row in results
+            ]
+            policy_lookup = {p["policy_id"]: p for p in policies}
+
+            actions_result = api_client.view_actionList(user_id)
+            existing_actions = actions_result.get("actions", [])
+
+            if not existing_actions:
+                print(f"[PolicyGaps] No existing actions for user {user_id}; all {len(policies)} policies are gaps.", flush=True)
+                return {
+                    "industry": industry,
+                    "total_policies": len(policies),
+                    "covered_count": 0,
+                    "gap_count": len(policies),
+                    "coverage_pct": 0.0,
+                    "gaps": policies,
+                    "covered": [],
+                    "top_gaps": policies[:5],
+                    "note": "No sustainability actions found. All policies are currently unaddressed — this is your starting point.",
+                }
+
+            action_summaries = [
+                f"- {a.get('action_name', 'Unknown')}: {a.get('action_description', '')}"
+                for a in existing_actions
+            ]
+            actions_text = "\n".join(action_summaries)
+
+            prompt = f"""You are assessing which procurement policies are already covered by a company's existing sustainability actions.
+
+Industry: {industry}
+
+Existing sustainability actions:
+{actions_text}
+
+Procurement policies to assess:
+{json.dumps(policies, indent=2)}
+
+For each policy, determine whether at least one of the existing actions clearly and substantially addresses that policy.
+Mark 'covered' as true only if an existing action clearly and substantially fulfils that policy requirement — partial alignment does not count.
+
+You MUST return an evaluation for every policy in the list. Do not skip any.
+
+Return ONLY a valid JSON object in this exact structure:
+{{
+  "evaluations": [
+    {{
+      "policy_id": "<id>",
+      "policy_name": "<name>",
+      "category": "<category>",
+      "covered": true or false,
+      "covering_action": "<name of the action that covers it, or null if not covered>",
+      "reason": "<one sentence explanation>"
+    }}
+  ]
+}}"""
+
+            evaluations = []
+            for attempt in range(3):
+                try:
+                    response = self.genai_client.models.generate_content(
+                        model="gemini-3.5-flash",
+                        contents=prompt,
+                        config={"response_mime_type": "application/json"}
+                    )
+                    evaluations = json.loads(response.text).get("evaluations", [])
+                    break
+                except Exception as llm_err:
+                    print(f"[PolicyGaps] LLM eval attempt {attempt + 1} failed: {llm_err}", flush=True)
+                    if attempt == 2:
+                        return {"error": f"LLM evaluation failed: {llm_err}"}
+                    time.sleep(2 ** attempt)
+
+            evaluated_ids = {e.get("policy_id") for e in evaluations}
+            for p in policies:
+                if p["policy_id"] not in evaluated_ids:
+                    evaluations.append({
+                        "policy_id": p["policy_id"],
+                        "policy_name": p["policy_name"],
+                        "category": p["category"],
+                        "covered": False,
+                        "covering_action": None,
+                        "reason": "Not evaluated by LLM — treated as a gap.",
+                    })
+
+            for e in evaluations:
+                pol = policy_lookup.get(e.get("policy_id"), {})
+                e["policy_source"] = pol.get("policy_source", "")
+                e["policy_description"] = pol.get("policy_description", "")
+
+            covered = [e for e in evaluations if e.get("covered")]
+            gaps = [e for e in evaluations if not e.get("covered")]
+            total = len(policies)
+            coverage_pct = round(len(covered) / total * 100, 1) if total > 0 else 0.0
+
+            print(f"[PolicyGaps] {industry}: {len(covered)}/{total} policies covered ({coverage_pct}%)", flush=True)
+
+            return {
+                "industry": industry,
+                "total_policies": total,
+                "covered_count": len(covered),
+                "gap_count": len(gaps),
+                "coverage_pct": coverage_pct,
+                "gaps": gaps,
+                "covered": covered,
+                "top_gaps": gaps[:5],
+                "note": f"Found {len(gaps)} policy gaps. Suggestions should prioritise the top_gaps list.",
+            }
+
+        except Exception as e:
+            print(f"[PolicyGaps] Failed: {e}", flush=True)
             return {"error": str(e)}
 
     def get_industry_guidelines(self, industry_name: str) -> dict:
@@ -1494,6 +1656,20 @@ Return ONLY a valid JSON object in this exact structure:
             func=self.calculate_procurement_roi
         )
 
+        get_policy_gaps_tool = StructuredTool(
+            name="get_policy_gaps",
+            description="""
+            Identifies which industry procurement policies are NOT yet covered by the user's existing
+            sustainability actions. Returns a gap list, coverage percentage, and top 5 priority gaps.
+            Call this at the start of every planning session to ground suggestions in real, verifiable
+            policy gaps. Works for both new users (no actions yet — returns all policies as gaps to
+            build a plan from scratch) and existing users (evaluates current actions against all policies
+            and shows what is still missing).
+            """,
+            args_schema=PolicyGapsInput,
+            func=self.get_policy_gaps
+        )
+
         # industry_guidelines_tool = StructuredTool(
         #     name="get_industry_guidelines",
         #     description="""
@@ -1541,18 +1717,19 @@ Return ONLY a valid JSON object in this exact structure:
         )
 
         tools_list = [
-            google_search_tool, 
-            document_read_tool, 
-            read_actions_tool, 
-            add_action_tool, 
-            remove_action_tool, 
-            update_action_tool, 
-            vertex_search_tool, 
-            octopus_fetch_tool, 
-            calculate_roi_tool, 
-            # industry_guidelines_tool, 
-            generate_pdf_tool, 
-            check_readiness_tool, 
+            google_search_tool,
+            document_read_tool,
+            read_actions_tool,
+            add_action_tool,
+            remove_action_tool,
+            update_action_tool,
+            vertex_search_tool,
+            octopus_fetch_tool,
+            calculate_roi_tool,
+            get_policy_gaps_tool,
+            # industry_guidelines_tool,
+            generate_pdf_tool,
+            check_readiness_tool,
             calculate_bulk_file_tool
         ]
 
