@@ -941,6 +941,8 @@ Return ONLY a valid JSON object in this exact structure:
                         base.scope,
                         base.category as factor_category,
                         CAST(query.amount AS FLOAT64) * base.factor as co2_kg,
+                        query.source_doc_name,
+                        'https://view.officeapps.live.com/op/view.aspx?src=https%3A%2F%2Fassets.publishing.service.gov.uk%2Fmedia%2F6846a4f55e92539572806125%2Fghg-conversion-factors-2025-full-set.xlsx&wdOrigin=BROWSELINK' as emission_factor_source,
                         ROW_NUMBER() OVER (PARTITION BY query.row_id ORDER BY distance) as rn
                     FROM VECTOR_SEARCH(
                         TABLE `carbon_data.emission_factors`,
@@ -1002,6 +1004,8 @@ Return ONLY a valid JSON object in this exact structure:
                 "scope": "Scope",
                 "factor_category": "Category",
                 "co2_kg": "CO2e (kg)",
+                "source_doc_name": "Source Document",
+                "emission_factor_source": "Emission Factor Source",
             }
             audit_df = df.rename(columns=column_rename)
 
@@ -1020,19 +1024,30 @@ Return ONLY a valid JSON object in this exact structure:
                     top=Side(style="thin"),
                     bottom=Side(style="thin"),
                 )
+                link_font = Font(color="0563C1", underline="single")
+
+                link_col_names = {"Emission Factor Source"}
+                header_row = [cell.value for cell in ws[1]]
+                link_col_indices = {
+                    col_idx for col_idx, name in enumerate(header_row, start=1)
+                    if name in link_col_names
+                }
 
                 for col_idx, cell in enumerate(ws[1], start=1):
                     cell.font = header_font
                     cell.fill = header_fill
                     cell.alignment = center_align
                     cell.border = thin_border
-                    # Auto-fit column width based on header and data
                     col_letter = cell.column_letter
                     max_len = len(str(cell.value)) if cell.value else 10
                     for data_cell in ws.iter_rows(min_row=2, min_col=col_idx, max_col=col_idx):
                         for dc in data_cell:
                             if dc.value is not None:
                                 max_len = max(max_len, len(str(dc.value)))
+                                if col_idx in link_col_indices and str(dc.value).startswith("http"):
+                                    dc.hyperlink = dc.value
+                                    dc.value = "View Source"
+                                    dc.font = link_font
                             dc.border = thin_border
                     ws.column_dimensions[col_letter].width = min(max_len + 4, 50)
 
@@ -1094,7 +1109,7 @@ Return ONLY a valid JSON object in this exact structure:
             except: pass
             return {"error": str(e)}
 
-    def _process_sheet(self, sheet_name: str, df: pd.DataFrame) -> list[dict]:
+    def _process_sheet(self, sheet_name: str, df: pd.DataFrame, source_doc_name: str = "") -> list[dict]:
         """
         Infers schema via Gemini and extracts activity rows for a single sheet.
         Designed to be called concurrently across sheets.
@@ -1217,7 +1232,8 @@ Return ONLY a valid JSON object in this exact structure:
                     "activity_name": activity_name,
                     "amount": amt,
                     "unit": unit_val,
-                    "context": row_context
+                    "context": row_context,
+                    "source_doc_name": source_doc_name,
                 })
             except Exception:
                 continue
@@ -1258,10 +1274,13 @@ Return ONLY a valid JSON object in this exact structure:
                         file_sheets = {"Data": pd.read_csv(
                             io.StringIO(content) if isinstance(content, str) else io.BytesIO(content)
                         )}
+                    print(f"[Tool] Blob metadata for '{filename}': {blob.metadata}", flush=True)
+                    original_name = (blob.metadata or {}).get("originalFileName") or filename
                     for sheet_name, df in file_sheets.items():
                         if not df.empty:
                             label = f"{filename} — {sheet_name}" if len(file_sheets) > 1 else filename
-                            all_sheets[label] = df
+                            display_name = f"{original_name} — {sheet_name}" if len(file_sheets) > 1 else original_name
+                            all_sheets[label] = (df, display_name)
                 except Exception as e:
                     print(f"[Tool] Failed to read '{filename}': {e}", flush=True)
 
@@ -1275,8 +1294,8 @@ Return ONLY a valid JSON object in this exact structure:
             max_workers = min(len(all_sheets), 5)
             with ThreadPoolExecutor(max_workers=max_workers) as executor:
                 futures = {
-                    executor.submit(self._process_sheet, label, df): label
-                    for label, df in all_sheets.items()
+                    executor.submit(self._process_sheet, label, df, name): label
+                    for label, (df, name) in all_sheets.items()
                 }
                 for future in as_completed(futures):
                     label = futures[future]
