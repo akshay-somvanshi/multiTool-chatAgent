@@ -18,7 +18,7 @@ class classifier():
             location=location_global
         )
         
-        self.model = 'gemini-3-flash-preview'
+        self.model = 'gemini-3.5-flash'
 
         self.tool = ToolList()
         self.generalist = agent(self.model, system_instruction_gen, self.tool.get_tools(), search_query)

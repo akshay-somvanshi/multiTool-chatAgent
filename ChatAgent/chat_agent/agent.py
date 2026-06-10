@@ -81,7 +81,7 @@ class agent:
 
         # Use Flash for summaries to save time and cost
         self.summary_llm = ChatVertexAI(
-            model_name="gemini-3-flash-preview",
+            model_name="gemini-3.5-flash",
             temperature=0.0, # Deterministic for summaries
             location="global",
             api_transport="rest"

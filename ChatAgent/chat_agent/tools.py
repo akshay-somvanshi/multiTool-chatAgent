@@ -450,9 +450,12 @@ class ToolList:
                     "policy_name": row.policy_name,
                     "policy_description": row.policy_description,
                     "category": row.category,
+                    "policy_source": row.policy_source,
                 }
                 for row in results
             ]
+            # Build a lookup so we can enrich evaluations with policy_source on the way out
+            policy_lookup = {p["policy_id"]: p for p in policies}
 
             prompt = f"""You are evaluating a sustainability action against procurement policies for the {industry} industry.
 
@@ -462,8 +465,10 @@ Action being evaluated:
 Procurement policies to assess:
 {json.dumps(policies, indent=2)}
 
-For each policy, determine whether completing this action would directly satisfy or tick off that policy requirement.
-Mark 'satisfied' as true if the action clearly addresses the policy criterion (even partially).
+For each policy, determine whether completing this action would directly and fully satisfy that policy requirement.
+Mark 'satisfied' as true only if the action clearly and completely meets the policy criterion — partial alignment does not count.
+
+You MUST return an evaluation for every policy in the list above. Do not skip any.
 
 Return ONLY a valid JSON object in this exact structure:
 {{
@@ -478,10 +483,11 @@ Return ONLY a valid JSON object in this exact structure:
   ]
 }}"""
 
+            evaluations = []
             for attempt in range(3):
                 try:
                     response = self.genai_client.models.generate_content(
-                        model="gemini-3-flash-preview",
+                        model="gemini-3.5-flash",
                         contents=prompt,
                         config={"response_mime_type": "application/json"}
                     )
@@ -493,9 +499,27 @@ Return ONLY a valid JSON object in this exact structure:
                         return {"error": f"LLM evaluation failed: {llm_err}"}
                     time.sleep(2 ** attempt)
 
+            # Use the BQ policy count as the authoritative denominator.
+            # Any policy the LLM omitted is treated as unsatisfied.
+            total = len(policies)
+            evaluated_ids = {e.get("policy_id") for e in evaluations}
+            for p in policies:
+                if p["policy_id"] not in evaluated_ids:
+                    evaluations.append({
+                        "policy_id": p["policy_id"],
+                        "policy_name": p["policy_name"],
+                        "category": p["category"],
+                        "satisfied": False,
+                        "reason": "Not evaluated by LLM — treated as unsatisfied.",
+                    })
+
+            # Enrich every evaluation with policy_source from BQ
+            for e in evaluations:
+                source = policy_lookup.get(e.get("policy_id"), {}).get("policy_source", "")
+                e["policy_source"] = source
+
             satisfied = [e for e in evaluations if e.get("satisfied")]
             unsatisfied = [e for e in evaluations if not e.get("satisfied")]
-            total = len(evaluations)
             score_pct = round(len(satisfied) / total * 100, 1) if total > 0 else 0.0
 
             print(f"[ROI] {industry}: {len(satisfied)}/{total} policies satisfied ({score_pct}%)", flush=True)
@@ -1159,7 +1183,7 @@ Return ONLY a valid JSON object in this exact structure:
         for attempt in range(3):
             try:
                 response = self.genai_client.models.generate_content(
-                    model="gemini-3-flash-preview",
+                    model="gemini-3.5-flash",
                     contents=prompt,
                     config={"response_mime_type": "application/json"}
                 )

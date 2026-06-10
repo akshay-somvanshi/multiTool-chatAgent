@@ -21,7 +21,7 @@ FILE_PATH_PREFIX = 'gs://dash-beta-e61d0.firebasestorage.app/'
 
 # Vertex AI Configuration
 LOCATION = 'global'
-GEMINI_MODEL_ID = 'gemini-3-flash-preview'
+GEMINI_MODEL_ID = 'gemini-3.5-flash'
 
 # Vertex AI Search (Data Store) Configuration
 DATA_STORE_LOCATION = 'eu'

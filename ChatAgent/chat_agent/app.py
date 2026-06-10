@@ -37,7 +37,7 @@ system_instruction_gen = load_and_format_prompt("chat_agent/prompts/system_gener
 system_instruction_plan = load_and_format_prompt("chat_agent/prompts/system_planning.md", dash_identity=dash_identity, plan_questions=json.dumps(plan_questions, indent=2))
 system_instruction_act = load_and_format_prompt("chat_agent/prompts/system_action.md", dash_identity=dash_identity)
 
-model = "gemini-2.5-flash"
+model = "gemini-3.5-flash"
 
 # Initialise the classifier
 classifier = classifier(
