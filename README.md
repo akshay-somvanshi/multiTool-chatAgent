@@ -11,7 +11,7 @@ A conversational AI agent built with Langchain and Google Vertex AI, designed to
 *   **Dynamic Model Selection:** Optimizes performance by switching between Flash and Pro models based on conversation complexity.
 *   **Hybrid Energy Data Strategy:** Implements a hybrid retrieval layer. Historical data is ingested into RAG (Vertex AI Search), while real-time data is fetched directly via the Octopus Energy API.
 *   **Automated Ingestion Pipeline:** A GCS-to-BigQuery pipeline triggered by Eventarc. Supports OCR via Document AI and semantic extraction via Gemini 3.1.
-*   **Intelligent Streaming & Tag Filtering:** Implements a specialized streaming loop with a "Lookahead" buffer that hides internal tags from the user's view in real-time.
+*   **Intelligent Streaming & Tag Filtering:** Implements a specialised streaming loop with a "Lookahead" buffer that hides internal tags from the user's view in real-time.
 *   **SAP ERP Integration:** Capability to pull Purchase Orders from SAP S/4HANA with enriched metadata, including material mapping, supplier names, and automated cost/weight calculations.
 *   **Robust Error Handling & Retries:** Feature-rich fallback mechanisms and automated retries in non-streaming modes to ensure high availability even during transient LLM or API failures.
 *   **Google Search & Vertex AI Search Integration:** Combines real-time web data with internal knowledge base retrieval.
