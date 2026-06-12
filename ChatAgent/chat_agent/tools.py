@@ -1128,6 +1128,7 @@ Return ONLY a valid JSON object in this exact structure:
                         base.category as factor_category,
                         CAST(query.amount AS FLOAT64) * base.factor as co2_kg,
                         query.source_doc_name,
+                        query.cell_ref,
                         'https://view.officeapps.live.com/op/view.aspx?src=https%3A%2F%2Fassets.publishing.service.gov.uk%2Fmedia%2F6846a4f55e92539572806125%2Fghg-conversion-factors-2025-full-set.xlsx&wdOrigin=BROWSELINK' as emission_factor_source,
                         ROW_NUMBER() OVER (PARTITION BY query.row_id ORDER BY distance) as rn
                     FROM VECTOR_SEARCH(
@@ -1191,6 +1192,7 @@ Return ONLY a valid JSON object in this exact structure:
                 "factor_category": "Category",
                 "co2_kg": "CO2e (kg)",
                 "source_doc_name": "Source Document",
+                "cell_ref": "Source Cell",
                 "emission_factor_source": "Emission Factor Source",
             }
             audit_df = df.rename(columns=column_rename)
@@ -1304,6 +1306,8 @@ Return ONLY a valid JSON object in this exact structure:
             return []
 
         # Dynamic header promotion for dirty corporate sheets (e.g. title banners at the top)
+        # data_start_row: 1-based Excel row number where data begins (row 1 = header in normal sheets)
+        data_start_row = 2  # default: header at Excel row 1, data at row 2
         for idx in range(min(5, len(df))):
             row_vals = [str(x).strip().lower() for x in df.iloc[idx].values if pd.notna(x)]
             header_keywords = [
@@ -1319,6 +1323,8 @@ Return ONLY a valid JSON object in this exact structure:
                     new_headers.append(str(val).strip() if pd.notna(val) else f"Unnamed: {col_idx}")
                 df.columns = new_headers
                 df = df.iloc[idx + 1:].reset_index(drop=True)
+                # idx rows were title rows, promoted header is at Excel row idx+2, data starts at idx+3
+                data_start_row = idx + 3
                 print(f"[Tool] Promoted headers for {sheet_name} at row {idx}: {new_headers}", flush=True)
                 break
 
@@ -1384,11 +1390,22 @@ Return ONLY a valid JSON object in this exact structure:
             print(f"[Tool] Could not find amount column for '{sheet_name}'. Skipping.", flush=True)
             return []
 
+        # Resolve Excel column letter for the amount column so we can write cell refs to the audit trail.
+        # 'nights' is a virtual computed column with no real cell, so we fall back to "N/A".
+        from openpyxl.utils import get_column_letter
+        if amount_col == 'nights':
+            amount_col_letter = None  # computed column, no source cell
+        else:
+            try:
+                amount_col_letter = get_column_letter(df.columns.tolist().index(amount_col) + 1)
+            except ValueError:
+                amount_col_letter = None
+
         activities = []
         columns = df.columns.tolist()
-        
+
         # Optimize performance by bypassing df.iterrows()
-        for row in df.to_dict('records'):
+        for df_idx, row in enumerate(df.to_dict('records')):
             try:
                 # Skip summary/total rows
                 is_total_row = any(
@@ -1413,6 +1430,9 @@ Return ONLY a valid JSON object in this exact structure:
 
                 row_context = " | ".join(f"{k}: {v}" for k, v in row.items() if pd.notna(v))
 
+                excel_row = df_idx + data_start_row
+                cell_ref = f"{amount_col_letter}{excel_row}" if amount_col_letter else f"Row {excel_row} (computed)"
+
                 activities.append({
                     "row_id": f"{sheet_name}_{len(activities)}",
                     "activity_name": activity_name,
@@ -1420,6 +1440,7 @@ Return ONLY a valid JSON object in this exact structure:
                     "unit": unit_val,
                     "context": row_context,
                     "source_doc_name": source_doc_name,
+                    "cell_ref": cell_ref,
                 })
             except Exception:
                 continue
