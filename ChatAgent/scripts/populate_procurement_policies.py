@@ -43,7 +43,27 @@ POLICY_SCHEMA = [
     bigquery.SchemaField("policy_description", "STRING"),
     bigquery.SchemaField("category", "STRING"),
     bigquery.SchemaField("last_updated", "TIMESTAMP"),
+    bigquery.SchemaField("policy_type", "STRING"),    # "regulatory" or "corporate"
+    bigquery.SchemaField("source_company", "STRING"), # populated for corporate policies only
 ]
+
+# ---------------------------------------------------------------------------
+# Seed companies per industry — well-known firms that publicly publish
+# supplier sustainability / responsible sourcing requirements.
+# Search discovery supplements this list at runtime.
+# ---------------------------------------------------------------------------
+CORPORATE_COMPANIES = {
+    "Retail": ["Marks & Spencer", "Tesco", "Unilever", "Primark", "ASOS"],
+    "Manufacturing": ["Siemens", "Rolls-Royce", "BAE Systems", "Jaguar Land Rover", "Dyson"],
+    "Construction": ["Balfour Beatty", "Skanska", "Mace Group", "Kier Group", "Morgan Sindall"],
+    "Financial Services": ["HSBC", "Lloyds Banking Group", "Aviva", "Legal & General", "Barclays"],
+    "Healthcare": ["GSK", "AstraZeneca", "Bupa", "Reckitt", "Haleon"],
+    "Technology": ["BT Group", "Vodafone", "Sage Group", "Arm Holdings", "Micro Focus"],
+    "Food & Beverage": ["Diageo", "Associated British Foods", "Premier Foods", "Greggs", "Cranswick"],
+    "Logistics & Transport": ["DHL UK", "Royal Mail Group", "XPO Logistics", "Wincanton", "DPD Group"],
+    "Energy & Utilities": ["BP", "Shell UK", "National Grid", "SSE", "Centrica"],
+    "Professional Services": ["Deloitte", "PwC", "KPMG", "Accenture", "Capita"],
+}
 
 # ---------------------------------------------------------------------------
 # Cross-industry universal policies — added to every industry
@@ -1221,17 +1241,25 @@ DEFAULT_INDUSTRIES = list(CURATED_POLICIES.keys())
 def ensure_table(bq_client: bigquery.Client) -> None:
     table_ref = f"{PROJECT_ID}.{DATASET_ID}.{TABLE_ID}"
     try:
-        bq_client.get_table(table_ref)
+        table = bq_client.get_table(table_ref)
         print(f"Table {table_ref} already exists.")
+        # Add any new columns that don't exist yet (schema evolution)
+        existing_names = {f.name for f in table.schema}
+        new_fields = [f for f in POLICY_SCHEMA if f.name not in existing_names]
+        if new_fields:
+            table.schema = list(table.schema) + new_fields
+            bq_client.update_table(table, ["schema"])
+            print(f"  Schema evolved: added {[f.name for f in new_fields]}")
     except Exception:
         table = bigquery.Table(table_ref, schema=POLICY_SCHEMA)
         bq_client.create_table(table)
         print(f"Created table {table_ref}.")
 
 
-def get_existing_policy_names(bq_client: bigquery.Client, industry: str) -> set[str]:
+def get_existing_policy_keys(bq_client: bigquery.Client, industry: str) -> set[tuple]:
+    """Returns a set of (lower_policy_name, lower_source_company) tuples already in BQ."""
     query = f"""
-        SELECT LOWER(policy_name) as pname
+        SELECT LOWER(policy_name) as pname, LOWER(IFNULL(source_company, '')) as sco
         FROM `{PROJECT_ID}.{DATASET_ID}.{TABLE_ID}`
         WHERE LOWER(industry) = @industry
     """
@@ -1240,7 +1268,7 @@ def get_existing_policy_names(bq_client: bigquery.Client, industry: str) -> set[
     )
     try:
         results = bq_client.query(query, job_config=job_config).result()
-        return {row.pname for row in results}
+        return {(row.pname, row.sco) for row in results}
     except Exception:
         return set()
 
@@ -1251,12 +1279,13 @@ def insert_policies(
     policies: list[dict],
     dry_run: bool,
 ) -> int:
-    existing = get_existing_policy_names(bq_client, industry)
+    existing = get_existing_policy_keys(bq_client, industry)
     now = datetime.now(timezone.utc).isoformat()
     rows = []
     for p in policies:
         name = p.get("policy_name", "").strip()
-        if not name or name.lower() in existing:
+        source_company = p.get("source_company") or ""
+        if not name or (name.lower(), source_company.lower()) in existing:
             continue
         rows.append({
             "policy_id": str(uuid.uuid4()),
@@ -1266,6 +1295,8 @@ def insert_policies(
             "policy_description": p.get("policy_description", ""),
             "category": p.get("category", ""),
             "last_updated": now,
+            "policy_type": p.get("policy_type", "regulatory"),
+            "source_company": source_company or None,
         })
 
     if not rows:
@@ -1386,6 +1417,204 @@ Return ONLY valid JSON:
 
 
 # ---------------------------------------------------------------------------
+# Corporate policy discovery
+# ---------------------------------------------------------------------------
+
+_SEARCH_AVAILABLE: bool | None = None  # cached after first check
+
+def google_search(query: str, num: int = 8) -> list[dict]:
+    """Thin wrapper around the Custom Search API. Returns [{title, snippet, url}]."""
+    global _SEARCH_AVAILABLE
+    if not GOOGLE_SEARCH_API_KEY or not GOOGLE_SEARCH_CX:
+        if _SEARCH_AVAILABLE is not False:
+            print("  [search] GOOGLE_API_KEY or GOOGLE_CSE_ID not set — web search disabled, using Gemini parametric knowledge only.")
+            _SEARCH_AVAILABLE = False
+        return []
+    try:
+        resp = requests.get(
+            "https://www.googleapis.com/customsearch/v1",
+            params={"key": GOOGLE_SEARCH_API_KEY, "cx": GOOGLE_SEARCH_CX, "q": query, "num": num},
+            timeout=10,
+        )
+        resp.raise_for_status()
+        items = resp.json().get("items", [])
+        _SEARCH_AVAILABLE = True
+        return [
+            {"title": item.get("title", ""), "snippet": item.get("snippet", ""), "url": item.get("link", "")}
+            for item in items
+        ]
+    except Exception as e:
+        print(f"  [search] Query failed ({query!r}): {e}")
+        return []
+
+
+def discover_companies(industry: str, seed_companies: list[str], gemini_client: genai.Client) -> list[str]:
+    """
+    Supplement the seed company list with additional companies discovered via search.
+    Falls back to asking Gemini directly if search is unavailable.
+    """
+    print(f"  [corporate] Discovering additional {industry} companies with published supplier policies...")
+    results = google_search(f"major {industry} companies UK supplier sustainability requirements published", num=10)
+    results += google_search(f"{industry} sector leading companies supplier code of conduct ESG UK", num=10)
+
+    seed_str = ", ".join(seed_companies)
+
+    if results:
+        search_context = "\nSearch results to ground your answer:\n" + "\n".join(
+            f"- [{r['title']}] {r['snippet']}" for r in results[:12]
+        )
+    else:
+        print("  [corporate] No search results — asking Gemini from parametric knowledge.")
+        search_context = (
+            "\nNote: No live search results are available. Use your training knowledge "
+            "to identify companies in this industry that are well-known for publishing "
+            "detailed supplier sustainability or responsible sourcing requirements."
+        )
+
+    prompt = f"""List real UK or international companies operating in the {industry} industry
+that are well known for publishing detailed supplier sustainability requirements,
+procurement codes of conduct, or responsible sourcing policies.
+
+Already have these companies: {seed_str}
+Add only NEW companies not already in that list. Return 3-8 additional companies.
+Only include companies with documented, publicly available supplier-facing sustainability requirements.
+{search_context}
+
+Return ONLY valid JSON:
+{{"companies": ["Company A", "Company B"]}}"""
+
+    for attempt in range(3):
+        try:
+            response = gemini_client.models.generate_content(
+                model=GEMINI_MODEL,
+                contents=prompt,
+                config=GenerateContentConfig(response_mime_type="application/json"),
+            )
+            discovered = json.loads(response.text).get("companies", [])
+            all_companies = seed_companies + [c for c in discovered if c not in seed_companies]
+            print(f"  [corporate] Discovered {len(discovered)} additional companies: {discovered}")
+            return all_companies
+        except Exception as e:
+            print(f"  [corporate] Company discovery attempt {attempt + 1} failed: {e}")
+            if attempt == 2:
+                return seed_companies
+            time.sleep(2 ** attempt)
+    return seed_companies
+
+
+def fetch_corporate_policies(
+    company: str,
+    industry: str,
+    gemini_client: genai.Client,
+) -> list[dict]:
+    """
+    Search for a company's published supplier sustainability requirements and use
+    Gemini to extract them as structured policies. Falls back to Gemini parametric
+    knowledge if search is unavailable.
+    """
+    print(f"  [corporate] Fetching policies for: {company}")
+    results = google_search(f"{company} supplier sustainability requirements procurement policy", num=8)
+    results += google_search(f"{company} responsible sourcing supplier code of conduct ESG requirements", num=6)
+
+    if results:
+        search_context = (
+            f"Based on the search results below, identify specific, concrete requirements "
+            f"that {company} places on its suppliers.\n\n"
+            "Search results:\n"
+            + "\n".join(f"- [{r['title']}] ({r['url']}): {r['snippet']}" for r in results[:10])
+        )
+        grounding_instruction = (
+            f"Only extract requirements clearly attributable to {company}'s own published policy — "
+            "not general industry standards. Do NOT fabricate requirements not evidenced in the results."
+        )
+    else:
+        print(f"  [corporate] No search results — using Gemini parametric knowledge for {company}.")
+        search_context = (
+            f"Use your training knowledge of {company}'s publicly available supplier sustainability "
+            f"requirements, responsible sourcing policy, or supplier code of conduct.\n"
+            f"{company} operates in the {industry} industry."
+        )
+        grounding_instruction = (
+            f"Only include requirements you are confident {company} actually publishes. "
+            "If you have no reliable knowledge of their specific supplier requirements, return an empty list."
+        )
+
+    prompt = f"""You are extracting procurement requirements from {company}'s publicly published
+supplier sustainability or responsible sourcing policies.
+
+{search_context}
+
+Each requirement should be something a supplier must DO or HAVE (e.g. hold a certification,
+meet a standard, publish a report, commit to a target). {grounding_instruction}
+
+Return 4-8 requirements as valid JSON. Return an empty list if requirements cannot be reliably identified.
+
+{{
+  "policies": [
+    {{
+      "policy_name": "Specific requirement name (include {company} in the name)",
+      "policy_description": "What the requirement entails — 1-2 sentences",
+      "category": "one of: environmental, social, governance, supply_chain, reporting, certification",
+      "policy_source": "{company} — [document name if known, e.g. Plan A, Supplier Code of Conduct]"
+    }}
+  ]
+}}"""
+
+    for attempt in range(3):
+        try:
+            response = gemini_client.models.generate_content(
+                model=GEMINI_MODEL,
+                contents=prompt,
+                config=GenerateContentConfig(response_mime_type="application/json"),
+            )
+            raw = json.loads(response.text).get("policies", [])
+            for p in raw:
+                p["policy_type"] = "corporate"
+                p["source_company"] = company
+            print(f"  [corporate] Extracted {len(raw)} requirements from {company}.")
+            return raw
+        except Exception as e:
+            print(f"  [corporate] Extraction attempt {attempt + 1} failed for {company}: {e}")
+            if attempt == 2:
+                return []
+            time.sleep(2 ** attempt)
+    return []
+
+
+def populate_corporate_policies(
+    industry: str,
+    bq_client: bigquery.Client,
+    gemini_client: genai.Client,
+    dry_run: bool,
+    manual_companies: list[str] | None = None,
+) -> int:
+    """
+    Discover companies and extract their supplier sustainability requirements,
+    then insert as corporate procurement policies alongside regulatory ones.
+    """
+    print(f"\n  [corporate] Running corporate policy discovery for: {industry}")
+
+    seed = CORPORATE_COMPANIES.get(industry, [])
+    if manual_companies:
+        # Manual override completely replaces discovery
+        companies = manual_companies
+        print(f"  [corporate] Using {len(companies)} manually specified companies.")
+    else:
+        companies = discover_companies(industry, seed, gemini_client)
+
+    total_inserted = 0
+    for company in companies:
+        policies = fetch_corporate_policies(company, industry, gemini_client)
+        if policies:
+            inserted = insert_policies(bq_client, industry, policies, dry_run)
+            total_inserted += inserted
+        time.sleep(1)  # be polite to the search API
+
+    print(f"  [corporate] Done. Inserted {total_inserted} corporate policies for {industry}.")
+    return total_inserted
+
+
+# ---------------------------------------------------------------------------
 # Per-industry orchestration
 # ---------------------------------------------------------------------------
 
@@ -1395,6 +1624,8 @@ def populate_industry(
     gemini_client: genai.Client | None,
     dry_run: bool,
     use_llm_supplement: bool,
+    add_corporate: bool = False,
+    corporate_companies: list[str] | None = None,
 ) -> int:
     print(f"\nProcessing: {industry}")
 
@@ -1410,6 +1641,11 @@ def populate_industry(
         extra = supplement_with_llm(industry, existing_names, search_results, gemini_client)
         print(f"  LLM suggested {len(extra)} additional policies.")
         inserted += insert_policies(bq_client, industry, extra, dry_run)
+
+    if add_corporate and gemini_client is not None:
+        inserted += populate_corporate_policies(
+            industry, bq_client, gemini_client, dry_run, manual_companies=corporate_companies
+        )
 
     return inserted
 
@@ -1430,7 +1666,24 @@ def main():
     parser.add_argument(
         "--supplement-with-llm",
         action="store_true",
-        help="After inserting curated policies, run a Gemini pass to suggest additional ones",
+        help="After inserting curated policies, run a Gemini pass to suggest additional regulatory ones",
+    )
+    parser.add_argument(
+        "--add-corporate",
+        action="store_true",
+        help=(
+            "Discover and insert corporate procurement policies from leading companies "
+            "in each industry. Uses search + Gemini to extract their supplier requirements."
+        ),
+    )
+    parser.add_argument(
+        "--corporate-companies",
+        type=str,
+        default=None,
+        help=(
+            "Comma-separated list of specific companies to extract corporate policies from "
+            "(overrides search-driven discovery). e.g. --corporate-companies 'M&S,Tesco,Unilever'"
+        ),
     )
     args = parser.parse_args()
 
@@ -1440,9 +1693,16 @@ def main():
         else DEFAULT_INDUSTRIES
     )
 
+    corporate_companies = (
+        [c.strip() for c in args.corporate_companies.split(",")]
+        if args.corporate_companies
+        else None
+    )
+
+    needs_gemini = args.supplement_with_llm or args.add_corporate
     bq_client = bigquery.Client(project=PROJECT_ID)
     gemini_client = None
-    if args.supplement_with_llm:
+    if needs_gemini:
         gemini_client = genai.Client(vertexai=True, project=PROJECT_ID, location="global")
 
     if not args.dry_run:
@@ -1456,6 +1716,8 @@ def main():
             gemini_client,
             dry_run=args.dry_run,
             use_llm_supplement=args.supplement_with_llm,
+            add_corporate=args.add_corporate,
+            corporate_companies=corporate_companies,
         )
 
     print(f"\nDone. Total policies inserted: {total_inserted}")

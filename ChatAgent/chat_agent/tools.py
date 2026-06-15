@@ -429,10 +429,12 @@ class ToolList:
             dataset_id = "dash_beta_database"
             table_id = "procurement_policies"
             query = f"""
-                SELECT policy_id, policy_name, policy_description, category, policy_source
+                SELECT policy_id, policy_name, policy_description, category, policy_source,
+                       IFNULL(policy_type, 'regulatory') as policy_type,
+                       source_company
                 FROM `{self.project_id}.{dataset_id}.{table_id}`
                 WHERE LOWER(industry) = @industry
-                ORDER BY category, policy_name
+                ORDER BY policy_type, category, policy_name
             """
             job_config = bigquery.QueryJobConfig(
                 query_parameters=[
@@ -454,6 +456,8 @@ class ToolList:
                     "policy_description": row.policy_description,
                     "category": row.category,
                     "policy_source": row.policy_source,
+                    "policy_type": row.policy_type,
+                    "source_company": row.source_company or None,
                 }
                 for row in results
             ]
@@ -465,11 +469,13 @@ class ToolList:
 Action being evaluated:
 {action_description}
 
-Procurement policies to assess:
+Procurement policies to assess (mix of regulatory requirements and corporate standards from leading industry companies):
 {json.dumps(policies, indent=2)}
 
 For each policy, determine whether completing this action would directly and fully satisfy that policy requirement.
-Mark 'satisfied' as true only if the action clearly and completely meets the policy criterion — partial alignment does not count.
+- For regulatory policies: mark satisfied only if the action clearly meets the legal/standard requirement.
+- For corporate policies: mark satisfied if the action meets what that specific company requires of its suppliers.
+Mark 'satisfied' as true only if the action clearly and completely meets the criterion — partial alignment does not count.
 
 You MUST return an evaluation for every policy in the list above. Do not skip any.
 
@@ -516,10 +522,12 @@ Return ONLY a valid JSON object in this exact structure:
                         "reason": "Not evaluated by LLM — treated as unsatisfied.",
                     })
 
-            # Enrich every evaluation with policy_source from BQ
+            # Enrich every evaluation with policy_source, policy_type, source_company from BQ
             for e in evaluations:
-                source = policy_lookup.get(e.get("policy_id"), {}).get("policy_source", "")
-                e["policy_source"] = source
+                p = policy_lookup.get(e.get("policy_id"), {})
+                e["policy_source"] = p.get("policy_source", "")
+                e["policy_type"] = p.get("policy_type", "regulatory")
+                e["source_company"] = p.get("source_company") or None
 
             satisfied = [e for e in evaluations if e.get("satisfied")]
             unsatisfied = [e for e in evaluations if not e.get("satisfied")]
@@ -562,10 +570,12 @@ Return ONLY a valid JSON object in this exact structure:
             dataset_id = "dash_beta_database"
             table_id = "procurement_policies"
             query = f"""
-                SELECT policy_id, policy_name, policy_description, category, policy_source
+                SELECT policy_id, policy_name, policy_description, category, policy_source,
+                       IFNULL(policy_type, 'regulatory') as policy_type,
+                       source_company
                 FROM `{self.project_id}.{dataset_id}.{table_id}`
                 WHERE LOWER(industry) = @industry
-                ORDER BY category, policy_name
+                ORDER BY policy_type, category, policy_name
             """
             job_config = bigquery.QueryJobConfig(
                 query_parameters=[
@@ -587,6 +597,8 @@ Return ONLY a valid JSON object in this exact structure:
                     "policy_description": row.policy_description,
                     "category": row.category,
                     "policy_source": row.policy_source,
+                    "policy_type": row.policy_type,
+                    "source_company": row.source_company or None,
                 }
                 for row in results
             ]
