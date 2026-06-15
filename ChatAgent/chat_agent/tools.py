@@ -103,6 +103,9 @@ class ProcurementROIInput(BaseModel):
 class PolicyGapsInput(BaseModel):
     user_id: str = Field(description="User ID to check policy gaps for")
 
+class DecarbonisationActionsInput(BaseModel):
+    user_id: str = Field(description="User ID to fetch decarbonisation actions for")
+
 class IndustryInfoInput(BaseModel):
     industry_name: str = Field(description="The name of the industry to look up guidelines for (e.g., 'Retail', 'Manufacturing')")
 
@@ -710,6 +713,65 @@ Return ONLY a valid JSON object in this exact structure:
 
         except Exception as e:
             print(f"[PolicyGaps] Failed: {e}", flush=True)
+            return {"error": str(e)}
+
+    def get_decarbonisation_actions(self, user_id: str) -> dict:
+        """
+        Retrieves real-world decarbonisation initiatives and actions from sustainability
+        reports of leading companies in the user's industry. Use these as concrete, grounded
+        ideas for proposing sustainability actions to the user to satisfy procurement policies.
+        """
+        try:
+            session_id = f"decarb_{datetime.now().strftime('%Y%m%d')}"
+            fs = FireStoreChat(user_id, session_id)
+            user_doc = fs.user_ref.get()
+            if not user_doc.exists:
+                return {"error": "User not found"}
+
+            user_data = user_doc.to_dict()
+            industry = user_data.get("company_industry", "").strip()
+            if not industry:
+                return {"error": "User's industry is not set in their profile"}
+
+            dataset_id = "dash_beta_database"
+            table_id = "decarbonisation_plans"
+            query = f"""
+                SELECT plan_id, company_name, action_name, action_description, category, target_year, source_report
+                FROM `{self.project_id}.{dataset_id}.{table_id}`
+                WHERE LOWER(industry) = @industry
+                ORDER BY category, company_name, action_name
+            """
+            job_config = bigquery.QueryJobConfig(
+                query_parameters=[
+                    bigquery.ScalarQueryParameter("industry", "STRING", industry.lower())
+                ]
+            )
+            results = list(self.bq_client.query(query, job_config=job_config).result())
+
+            actions = [
+                {
+                    "plan_id": row.plan_id,
+                    "company_name": row.company_name,
+                    "action_name": row.action_name,
+                    "action_description": row.action_description,
+                    "category": row.category,
+                    "target_year": row.target_year,
+                    "source_report": row.source_report,
+                }
+                for row in results
+            ]
+
+            print(f"[DecarbonisationActions] {industry}: Found {len(actions)} actions", flush=True)
+
+            return {
+                "industry": industry,
+                "total_actions": len(actions),
+                "decarbonisation_actions": actions,
+                "note": f"Ground suggested sustainability actions for the user in these real-world initiatives from other {industry} companies.",
+            }
+
+        except Exception as e:
+            print(f"[DecarbonisationActions] Failed: {e}", flush=True)
             return {"error": str(e)}
 
     def get_industry_guidelines(self, industry_name: str) -> dict:
@@ -1703,6 +1765,17 @@ Return ONLY a valid JSON object in this exact structure:
             func=self.get_policy_gaps
         )
 
+        get_decarbonisation_actions_tool = StructuredTool(
+            name="get_decarbonisation_actions",
+            description="""
+            Retrieves real-world decarbonisation initiatives and actions from sustainability reports
+            of leading companies in the user's industry. Use these as concrete, grounded ideas for
+            proposing sustainability actions to the user to satisfy procurement policies.
+            """,
+            args_schema=DecarbonisationActionsInput,
+            func=self.get_decarbonisation_actions
+        )
+
         # industry_guidelines_tool = StructuredTool(
         #     name="get_industry_guidelines",
         #     description="""
@@ -1760,6 +1833,7 @@ Return ONLY a valid JSON object in this exact structure:
             octopus_fetch_tool,
             calculate_roi_tool,
             get_policy_gaps_tool,
+            get_decarbonisation_actions_tool,
             # industry_guidelines_tool,
             generate_pdf_tool,
             check_readiness_tool,
