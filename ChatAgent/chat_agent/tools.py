@@ -116,6 +116,19 @@ class PDFGeneratorInput(BaseModel):
     company_name: str = Field(description="The name of the company (used for filename)")
     report_type: str = Field(description="The type of report, e.g. 'Sustainability plan', 'CDP document' (used for filename)")
 
+class PPTXSlide(BaseModel):
+    title: str = Field(description="Slide heading (short, max 8 words)")
+    bullets: list[str] = Field(description="3-6 bullet points for the slide body. Each bullet is one concise sentence.")
+    notes: str = Field(default="", description="Optional speaker notes for this slide")
+
+class PPTXGeneratorInput(BaseModel):
+    title: str = Field(description="Presentation title (shown on the cover slide)")
+    subtitle: str = Field(default="", description="Optional subtitle or tagline for the cover slide")
+    slides: list[PPTXSlide] = Field(description="List of content slides. Each slide has a title and bullets. Provide 4-10 slides.")
+    user_id: str = Field(description="The user ID to associate the file with")
+    company_name: str = Field(description="Company name — shown on the cover and used in the filename")
+    report_type: str = Field(description="Type label, e.g. 'Sustainability Plan', 'Emissions Overview' — used in filename")
+
 class CarbonCalculationInput(BaseModel):
     activity_name: str = Field(description="The name of the activity (e.g., 'Electricity', 'Petrol', 'Natural Gas', 'Short-haul Flight')")
     amount: float = Field(description="The numerical value of the activity (e.g., 500)")
@@ -1165,6 +1178,200 @@ Return ONLY a valid JSON object in this exact structure:
             print(f"Error generating PDF: {e}", flush=True)
             return f"Failed to generate PDF. Please try again."
 
+    def _pptx_set_bg(self, slide, colour) -> None:
+        bg = slide.background
+        fill = bg.fill
+        fill.solid()
+        fill.fore_color.rgb = colour
+
+    def _pptx_add_textbox(self, slide, text: str, left, top, width, height,
+                          font_size: int, bold: bool, colour,
+                          align=None, word_wrap: bool = True) -> None:
+        from pptx.util import Pt
+        from pptx.enum.text import PP_ALIGN
+        if align is None:
+            align = PP_ALIGN.LEFT
+        txBox = slide.shapes.add_textbox(left, top, width, height)
+        tf = txBox.text_frame
+        tf.word_wrap = word_wrap
+        p = tf.paragraphs[0]
+        p.alignment = align
+        run = p.add_run()
+        run.text = text
+        run.font.size = Pt(font_size)
+        run.font.bold = bold
+        run.font.color.rgb = colour
+        run.font.name = "Calibri"
+
+    def _generate_pptx_report(
+        self,
+        title: str,
+        subtitle: str,
+        slides: list[dict],
+        user_id: str,
+        company_name: str,
+        report_type: str,
+    ) -> str:
+        """
+        Generates a branded PowerPoint presentation, uploads it to GCS, and returns
+        a confirmation message. Each slide dict must have 'title', 'bullets' (list[str]),
+        and optionally 'notes' (str).
+        """
+        try:
+            from pptx import Presentation
+            from pptx.util import Inches, Pt
+            from pptx.dml.color import RGBColor
+            from pptx.enum.text import PP_ALIGN
+
+            DASH_GREEN      = RGBColor(0x05, 0x96, 0x69)
+            DASH_GREEN_DARK = RGBColor(0x06, 0x4E, 0x3B)
+            SLIDE_BG        = RGBColor(0xFF, 0xFF, 0xFF)
+            BODY_TEXT       = RGBColor(0x1F, 0x29, 0x37)
+            WHITE           = RGBColor(0xFF, 0xFF, 0xFF)
+            MINT            = RGBColor(0xA7, 0xF3, 0xD0)
+
+            print(f"[Tool] Generating PPTX for {company_name}: {report_type}", flush=True)
+
+            W = Inches(13.33)   # widescreen 16:9
+            H = Inches(7.5)
+
+            prs = Presentation()
+            prs.slide_width  = W
+            prs.slide_height = H
+
+            blank_layout = prs.slide_layouts[6]  # blank
+
+            # ── COVER SLIDE ──────────────────────────────────────────────
+            cover = prs.slides.add_slide(blank_layout)
+            self._pptx_set_bg(cover, DASH_GREEN_DARK)
+
+            # Green accent bar on left
+            bar = cover.shapes.add_shape(1, Inches(0), Inches(0), Inches(0.35), H)
+            bar.fill.solid()
+            bar.fill.fore_color.rgb = DASH_GREEN
+            bar.line.fill.background()
+
+            # Logo (top-right, small)
+            base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            logo_path = os.path.join(base_dir, "chat_agent", "data", "logo.png")
+            if os.path.exists(logo_path):
+                cover.shapes.add_picture(logo_path, Inches(11.8), Inches(0.25), width=Inches(1.2))
+
+            # Title
+            self._pptx_add_textbox(
+                cover, title,
+                left=Inches(0.7), top=Inches(2.4), width=Inches(11.0), height=Inches(1.6),
+                font_size=40, bold=True, colour=WHITE, align=PP_ALIGN.LEFT,
+            )
+
+            # Subtitle
+            if subtitle:
+                self._pptx_add_textbox(
+                    cover, subtitle,
+                    left=Inches(0.7), top=Inches(4.1), width=Inches(11.0), height=Inches(0.8),
+                    font_size=20, bold=False, colour=MINT, align=PP_ALIGN.LEFT,
+                )
+
+            # Company + date line
+            date_str = datetime.now().strftime("%B %Y")
+            self._pptx_add_textbox(
+                cover, f"{company_name}  ·  {date_str}",
+                left=Inches(0.7), top=Inches(6.6), width=Inches(10.0), height=Inches(0.5),
+                font_size=13, bold=False, colour=MINT, align=PP_ALIGN.LEFT,
+            )
+
+            # ── CONTENT SLIDES ───────────────────────────────────────────
+            for slide_data in slides:
+                # slide_data may be a PPTXSlide Pydantic object or a plain dict
+                if hasattr(slide_data, "title"):
+                    s_title   = slide_data.title
+                    s_bullets = slide_data.bullets
+                    s_notes   = slide_data.notes or ""
+                else:
+                    s_title   = slide_data.get("title", "")
+                    s_bullets = slide_data.get("bullets", [])
+                    s_notes   = slide_data.get("notes", "")
+
+                sl = prs.slides.add_slide(blank_layout)
+                self._pptx_set_bg(sl, SLIDE_BG)
+
+                # Green header band
+                header_band = sl.shapes.add_shape(1, Inches(0), Inches(0), W, Inches(1.2))
+                header_band.fill.solid()
+                header_band.fill.fore_color.rgb = DASH_GREEN
+                header_band.line.fill.background()
+
+                # Slide title (white, on green band)
+                self._pptx_add_textbox(
+                    sl, s_title,
+                    left=Inches(0.4), top=Inches(0.15), width=Inches(12.0), height=Inches(0.9),
+                    font_size=24, bold=True, colour=WHITE, align=PP_ALIGN.LEFT,
+                )
+
+                # Bullet body
+                if s_bullets:
+                    body_box = sl.shapes.add_textbox(Inches(0.5), Inches(1.45), Inches(12.33), Inches(5.7))
+                    tf = body_box.text_frame
+                    tf.word_wrap = True
+
+                    for i, bullet in enumerate(s_bullets):
+                        if i == 0:
+                            para = tf.paragraphs[0]
+                        else:
+                            para = tf.add_paragraph()
+                        para.space_before = Pt(4)
+                        run = para.add_run()
+                        run.text = f"•  {bullet}"
+                        run.font.size = Pt(18)
+                        run.font.bold = False
+                        run.font.color.rgb = BODY_TEXT
+                        run.font.name = "Calibri"
+
+                # Speaker notes
+                if s_notes:
+                    sl.notes_slide.notes_text_frame.text = s_notes
+
+            # ── CLOSING SLIDE ────────────────────────────────────────────
+            closing = prs.slides.add_slide(blank_layout)
+            self._pptx_set_bg(closing, DASH_GREEN_DARK)
+            bar2 = closing.shapes.add_shape(1, Inches(0), Inches(0), Inches(0.35), H)
+            bar2.fill.solid()
+            bar2.fill.fore_color.rgb = DASH_GREEN
+            bar2.line.fill.background()
+            self._pptx_add_textbox(
+                closing, "Thank you",
+                left=Inches(0.7), top=Inches(2.8), width=Inches(11.0), height=Inches(1.0),
+                font_size=36, bold=True, colour=WHITE, align=PP_ALIGN.LEFT,
+            )
+            self._pptx_add_textbox(
+                closing, f"Prepared by Dash  ·  {company_name}",
+                left=Inches(0.7), top=Inches(3.9), width=Inches(11.0), height=Inches(0.6),
+                font_size=16, bold=False, colour=MINT, align=PP_ALIGN.LEFT,
+            )
+
+            # ── SAVE & UPLOAD ─────────────────────────────────────────────
+            safe_company = company_name.replace(" ", "").replace("/", "_")
+            safe_type    = report_type.replace(" ", "").replace("/", "_")
+            filename     = f"{safe_company}_{safe_type}.pptx"
+            temp_path    = f"/tmp/{filename}"
+            prs.save(temp_path)
+
+            bucket_name    = f"{self.project_id}.firebasestorage.app"
+            storage_client = storage.Client(project=self.project_id)
+            bucket         = storage_client.bucket(bucket_name)
+            blob           = bucket.blob(f"users/{user_id}/reports/{filename}")
+            blob.upload_from_filename(temp_path)
+
+            if os.path.exists(temp_path):
+                os.remove(temp_path)
+
+            print(f"[Tool] PPTX generated and uploaded: {filename}", flush=True)
+            return f"PowerPoint presentation '{filename}' generated successfully. You can access it in the Knowledge page."
+
+        except Exception as e:
+            print(f"[Tool] Error generating PPTX: {e}", flush=True)
+            return f"Failed to generate PowerPoint. Please try again."
+
     def _calculate_emissions_batch_bq(self, activities: list[dict], user_id: str) -> dict:
         """
         Analytical calculation: Loads activities to a temp BQ table and joins with factors.
@@ -1789,11 +1996,23 @@ Return ONLY a valid JSON object in this exact structure:
         generate_pdf_tool = StructuredTool(
             name="generate_pdf_report",
             description="""
-            Generates a professional PDF report from text content. 
+            Generates a professional PDF report from text content.
             Use this when the user specifically asks for a PDF version of a summary, report, or analysis.
             """,
             args_schema=PDFGeneratorInput,
             func=self._generate_pdf_report
+        )
+
+        generate_pptx_tool = StructuredTool(
+            name="generate_pptx_presentation",
+            description="""
+            Generates a branded PowerPoint (.pptx) presentation and uploads it to the user's Knowledge store.
+            Use this when the user asks for a presentation, slide deck, PowerPoint, or slides version of a plan,
+            report, or analysis. Structure the content into 4-10 slides — each slide gets a short title and
+            3-6 bullet points. Provide a cover title, optional subtitle, and a list of slide objects.
+            """,
+            args_schema=PPTXGeneratorInput,
+            func=self._generate_pptx_report
         )
 
         check_readiness_tool = StructuredTool(
@@ -1836,6 +2055,7 @@ Return ONLY a valid JSON object in this exact structure:
             get_decarbonisation_actions_tool,
             # industry_guidelines_tool,
             generate_pdf_tool,
+            generate_pptx_tool,
             check_readiness_tool,
             calculate_bulk_file_tool
         ]

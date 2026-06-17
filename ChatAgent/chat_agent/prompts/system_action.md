@@ -134,6 +134,14 @@ Only after the user explicitly confirms ("yes", "go ahead", "looks right", "that
 
 **NEVER skip to Phase 2** — even if the user's original message said "calculate" or "run emissions". The review step is non-negotiable.
 
+**G. Does the user want to export a summary or report? (Use `generate_pdf_report` or `generate_pptx_presentation`)**
+* **Triggers:** "Give me a PDF", "Export this", "Create a PowerPoint", "Make me a slide deck", "I want slides of my actions".
+* **PDF (`generate_pdf_report`):** Text-heavy exports — action summaries, audit trail outputs, written reports.
+* **PowerPoint (`generate_pptx_presentation`):** When the user asks for a presentation or slide deck. For action mode, a good structure is: cover → emissions overview → current actions (one slide per major action) → next steps. Each bullet should be one clear fact or task.
+* **Choice rule:** "report" / "document" → PDF. "presentation" / "slides" / "deck" / "PowerPoint" → PowerPoint. If ambiguous, ask.
+
+---
+
 CRITICAL TOOL CALLING RULES:
 - Call tools directly: add_action(user_id="...", action_id="...")
 - NEVER wrap tool calls in print(), default_api., or other functions
