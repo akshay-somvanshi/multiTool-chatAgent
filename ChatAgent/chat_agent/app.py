@@ -37,13 +37,24 @@ system_instruction_gen = load_and_format_prompt("chat_agent/prompts/system_gener
 system_instruction_plan = load_and_format_prompt("chat_agent/prompts/system_planning.md", dash_identity=dash_identity, plan_questions=json.dumps(plan_questions, indent=2))
 system_instruction_act = load_and_format_prompt("chat_agent/prompts/system_action.md", dash_identity=dash_identity)
 
+# Text-only channel prompts (e.g. WhatsApp): the same web prompt with a high-priority
+# override appended that suppresses all UI rendering blocks and forces plain text.
+# Loaded raw (no .format) so its braces/backticks are preserved verbatim.
+channel_text_override = load_prompt("chat_agent/prompts/channel_text_override.md")
+system_instruction_gen_text = system_instruction_gen + "\n\n" + channel_text_override
+system_instruction_plan_text = system_instruction_plan + "\n\n" + channel_text_override
+system_instruction_act_text = system_instruction_act + "\n\n" + channel_text_override
+
 model = "gemini-3.5-flash"
 
 # Initialise the classifier
 classifier = classifier(
-    system_instruction_gen=system_instruction_gen, 
-    system_instruction_plan=system_instruction_plan, 
-    system_instruction_act=system_instruction_act
+    system_instruction_gen=system_instruction_gen,
+    system_instruction_plan=system_instruction_plan,
+    system_instruction_act=system_instruction_act,
+    system_instruction_gen_text=system_instruction_gen_text,
+    system_instruction_plan_text=system_instruction_plan_text,
+    system_instruction_act_text=system_instruction_act_text
 )
 
 # Initialise the front end chatbot
@@ -86,6 +97,10 @@ app.add_middleware(
 class ChatIn(BaseModel):
     message: str = Field(description="User message")
     user_id: str = Field(description="Unique user identifier")
+    text_only: bool = Field(
+        default=False,
+        description="Plain-text channel (e.g. WhatsApp): suppress all UI rendering blocks."
+    )
 
 class UIAction(BaseModel):
     type: str
@@ -106,7 +121,9 @@ async def root():
 @app.post("/chat", response_model=ChatOut)
 async def chat(body: ChatIn):
     try:
-        response = await classifier.ainvoke(body.message, body.user_id)
+        if body.text_only:
+            print(f"[TextOnly] /chat request | user_id={body.user_id} | msg_len={len(body.message)}", flush=True)
+        response = await classifier.ainvoke(body.message, body.user_id, text_only=body.text_only)
         return ChatOut(response=response)
     
     except Exception as e:

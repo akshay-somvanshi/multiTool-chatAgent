@@ -11,19 +11,26 @@ location = 'europe-west1'
 location_global = 'global'
 
 class classifier():
-    def __init__(self, system_instruction_gen, system_instruction_plan, system_instruction_act):
+    def __init__(self, system_instruction_gen, system_instruction_plan, system_instruction_act,
+                 system_instruction_gen_text=None, system_instruction_plan_text=None,
+                 system_instruction_act_text=None):
         self.client = genai.Client(
             vertexai=True,
             project=project_id,
             location=location_global
         )
-        
+
         self.model = 'gemini-3.5-flash'
 
         self.tool = ToolList()
-        self.generalist = agent(self.model, system_instruction_gen, self.tool.get_tools(), search_query)
-        self.planning = agent(self.model, system_instruction_plan, self.tool.get_tools(), search_query)
-        self.action = agent(self.model, system_instruction_act, self.tool.get_tools(), search_query)
+        # Each agent also gets a text-only system prompt variant (for WhatsApp /
+        # other plain-text channels). text_only=True at invoke time selects it.
+        self.generalist = agent(self.model, system_instruction_gen, self.tool.get_tools(), search_query,
+                                text_system_prompt=system_instruction_gen_text)
+        self.planning = agent(self.model, system_instruction_plan, self.tool.get_tools(), search_query,
+                              text_system_prompt=system_instruction_plan_text)
+        self.action = agent(self.model, system_instruction_act, self.tool.get_tools(), search_query,
+                            text_system_prompt=system_instruction_act_text)
 
     def _get_daily_session_id(self, user_id: str) -> str:
         """Create one session per day"""
@@ -124,9 +131,9 @@ One word. No punctuation. No explanation."""
             async for chunk in self.generalist.astream_res(query, user_id):
                 yield chunk
 
-    async def ainvoke(self, query, user_id=None):
+    async def ainvoke(self, query, user_id=None, text_only=False):
         start = time.perf_counter()
-        
+
         # Set status
         if user_id:
             session_id = self._get_daily_session_id(user_id)
@@ -142,12 +149,15 @@ One word. No punctuation. No explanation."""
         decision = response.text.strip().lower()
         print(f"[Profiling] Classifier ({self.model}) decided '{decision}' in {time.perf_counter() - start:.2f}s", flush=True)
 
+        if text_only:
+            print(f"[TextOnly] WhatsApp/text channel | routed='{decision}' | user_id={user_id}", flush=True)
+
         if decision == "planning":
-            return await self.planning.ainvoke_res(query, user_id)
+            return await self.planning.ainvoke_res(query, user_id, text_only=text_only)
         elif decision == "action":
-            return await self.action.ainvoke_res(query, user_id)
+            return await self.action.ainvoke_res(query, user_id, text_only=text_only)
         else: # general or unclear maps to generalist
-            return await self.generalist.ainvoke_res(query, user_id)
+            return await self.generalist.ainvoke_res(query, user_id, text_only=text_only)
 
     def invoke(self, query, user_id=None):
         prompt = self._get_classifier_prompt(query)

@@ -25,12 +25,15 @@ class EmptyLLMResponseError(Exception):
     pass
 
 class agent:
-    def __init__(self, model_name: str,  system_prompt: str, tool_set, search_input):
+    def __init__(self, model_name: str,  system_prompt: str, tool_set, search_input, text_system_prompt: str = None):
         self.basic_model = model_name
         self.advanced_model = "gemini-3.1-pro-preview"
 
         self.tool_list = tool_set
         self.system_prompt = system_prompt
+        # Optional plain-text channel prompt (e.g. WhatsApp). When set, a second
+        # agent runnable is built that suppresses all UI rendering blocks.
+        self.text_system_prompt = text_system_prompt
         self.search_input = search_input
 
         # Set a limit on how many last messages we inject (limit short term memory)
@@ -117,6 +120,12 @@ class agent:
         self._model_selection = _amodel_selection
         self.llm = self.basic_llm # Use basic_llm
         self.agent = self._create_agent(self.llm)
+        # Text-only channel agent (shares the same LLM clients + tools, only the
+        # system prompt differs). None when no text prompt was provided.
+        self.text_agent = (
+            self._create_agent(self.llm, self.text_system_prompt)
+            if self.text_system_prompt else None
+        )
 
     def _init_FireStore(self, user_id: str, session_id: str = None):
         """Initialise Firestore to obtain chat history or user info for a specific user/session"""
@@ -125,19 +134,24 @@ class agent:
             session_id=session_id
         )
     
-    def _create_agent(self, llm):
-        # Create agent
+    def _create_agent(self, llm, system_prompt: str = None):
+        # Create agent. Falls back to the default system prompt when none passed.
         agent = create_agent(
             llm,
             tools=self.tool_list,
-            system_prompt=self.system_prompt,
+            system_prompt=system_prompt or self.system_prompt,
             context_schema=self.search_input,
             middleware=[self._model_selection],
         )
         return agent
 
-    def _extract_text_content(self, content: any) -> dict:
-        """Extracts text, UI component, and UI actions from the model's response."""
+    def _extract_text_content(self, content: any, text_only: bool = False) -> dict:
+        """Extracts text, UI component, and UI actions from the model's response.
+
+        When text_only is True (e.g. the WhatsApp channel), any UI blocks are
+        still stripped out of the message, but ui_actions/ui_component are never
+        returned — the user only ever sees plain text.
+        """
         if not content:
             return {"message": "", "ui_actions": [], "ui_component": None}
 
@@ -191,19 +205,29 @@ class agent:
                 data = json.loads(clean_message)
                 return {
                     "message": data.get("message", ""),
-                    "ui_actions": data.get("ui_actions", []),
-                    "ui_component": ui_component
+                    "ui_actions": [] if text_only else data.get("ui_actions", []),
+                    "ui_component": None if text_only else ui_component
                 }
             except json.JSONDecodeError:
                 try:
                     data = json.loads(clean_message.replace("'", '"'))
                     return {
                         "message": data.get("message", ""),
-                        "ui_actions": data.get("ui_actions", []),
-                        "ui_component": ui_component
+                        "ui_actions": [] if text_only else data.get("ui_actions", []),
+                        "ui_component": None if text_only else ui_component
                     }
                 except Exception:
                     pass
+
+        # Text-only channels (WhatsApp): never surface UI blocks to the user.
+        if text_only:
+            if component_match or ui_actions_match:
+                # The model emitted UI blocks despite the text-only prompt. They were
+                # stripped, but this can leave an orphan lead-in line (e.g. "Here is a
+                # summary:"). Logged so we can tighten the prompt if it recurs.
+                print(f"[TextOnly] Stripped UI blocks the model emitted despite text-only prompt "
+                      f"(component={bool(component_match)}, actions={bool(ui_actions_match)}).", flush=True)
+            return {"message": clean_message, "ui_actions": [], "ui_component": None}
 
         return {
             "message": clean_message,
@@ -255,14 +279,31 @@ class agent:
         print(f'[Profiling] Summary generation (Flash) took {time.perf_counter() - summary_start:.2f}s')
         return summary
     
-    async def ainvoke_res(self, query: str, user_id: str = None, session_id: str = None):
+    async def ainvoke_res(self, query: str, user_id: str = None, session_id: str = None, text_only: bool = False):
         total_start = time.perf_counter()
         max_retries = 2
         session_id = self._get_daily_session_id(user_id)
 
+        # Pick the plain-text agent for text-only channels (e.g. WhatsApp), else
+        # the default UI-rendering agent. Falls back to default if no text agent.
+        active_agent = self.text_agent if (text_only and self.text_agent) else self.agent
+
+        if text_only:
+            if self.text_agent is None:
+                print(f"[TextOnly] WARNING: text_only=True but no text_agent configured — "
+                      f"FALLING BACK to UI agent (responses may contain UI blocks). user_id={user_id}", flush=True)
+            else:
+                print(f"[TextOnly] Using text-only agent | user_id={user_id} | session={session_id}", flush=True)
+
         # Initialize Firestore for the current user and session
         firestore = self._init_FireStore(user_id, session_id)
-        
+
+        # Expose Firestore to tool calls via ContextVar so in-tool status updates
+        # (e.g. "carbon_calculation") work on the non-streaming path too. Without
+        # this, _firestore_ctx stays None and tool _emit_status() calls silently
+        # no-op — the stream path sets this (astream_res), so /chat must match.
+        _firestore_ctx.set(firestore)
+
         # Set status: Loading history
         await asyncio.to_thread(firestore.set_status, "history")
 
@@ -326,13 +367,13 @@ class agent:
         for attempt in range(max_retries):
             try:
                 step_start = time.perf_counter()
-                result = await self.agent.ainvoke({"messages": recent_messages})
+                result = await active_agent.ainvoke({"messages": recent_messages})
                 print(f"[Profiling] LLM Agent (attempt {attempt+1}) took {time.perf_counter() - step_start:.2f}s", flush=True)
-                
+
                 if result.get("finish_reason") == "MALFORMED_FUNCTION_CALL":
                     raise RuntimeError("Tool call failed due to malformed arguments")
-                
-                response_content = self._extract_text_content(result["messages"][-1].content)
+
+                response_content = self._extract_text_content(result["messages"][-1].content, text_only=text_only)
                 
                 if response_content:
                     break
