@@ -298,6 +298,146 @@ class HtmlViewer extends StatelessWidget {
 // Edit flow
 // ---------------------------------------------------------------------------
 void buildEditFlow(App app) {
+  // ── Report-issue feature ────────────────────────────────────────────────
+  // report_issues Firestore collection (idempotent — update schema if exists).
+  final reportIssues = app.collection(
+    'report_issues',
+    fields: {
+      'user_email': string,
+      'description': string,
+      'status': string,
+    },
+    description: 'User-submitted chat issue reports.',
+  );
+
+  // Dedicated report page — bottom sheets require a ComponentHandle which
+  // can't be obtained for an already-existing component, so we use a page
+  // with NavigateBack() instead.
+  app.ensurePage(
+    'ReportIssuePage',
+    route: '/report-issue',
+    description: 'Form for users to report a problem with the chat agent',
+    body: Scaffold(
+      appBar: AppBar(title: 'Report an Issue'),
+      body: Container(
+        padding: 24,
+        child: Column(
+          crossAxis: CrossAxis.start,
+          spacing: 16,
+          children: [
+            Text(
+              "Let us know what went wrong and we'll look into it.",
+              style: Styles.bodyMedium,
+              color: Colors.secondaryText,
+            ),
+            TextField(
+              label: 'What happened?',
+              hint: 'e.g. The agent gave an incorrect answer...',
+              name: 'reportTextField',
+              maxLines: 6,
+            ),
+            Button(
+              'Submit Report',
+              color: Colors.primary,
+              textColor: Colors.info,
+              width: double.infinity,
+              name: 'SubmitReportBtn',
+              onTap: [
+                FirestoreCreate(
+                  reportIssues,
+                  fields: {
+                    'user_email': const AuthUser(AuthUserField.email),
+                    'description': WidgetState(
+                      'reportTextField',
+                      WidgetStateProperty.text,
+                    ),
+                    'status': 'open',
+                  },
+                ),
+                NavigateBack(),
+                Snackbar("Thanks for the report — we'll look into it."),
+              ],
+            ),
+          ],
+        ),
+      ),
+    ),
+  );
+
+  // Hide the old header flag buttons by key. Using findByKey is reliable;
+  // findByName only works for page-state variables, not widget identifiers.
+  // IconButton_kw8s6ops = mobile flag, IconButton_h7u024gq = desktop flag.
+  app.editPage('Home_Page', (page) {
+    page.update(
+      page.findByKey('IconButton_kw8s6ops'),
+      (patch) { patch.visible(false); },
+    );
+    page.update(
+      page.findByKey('IconButton_h7u024gq'),
+      (patch) { patch.visible(false); },
+    );
+  });
+
+  // Fix ReportIssuePage: add close (X) button at top of body Column, and
+  // ensure Snackbar shows on the page before navigating back.
+  // AppBar child insertion does not create a leading widget in FlutterFlow,
+  // so the close button goes into the body Column_zgohcpge before the text.
+  app.editPage('ReportIssuePage', (page) {
+    page.ensureInsertedBefore(
+      page.findByKey('Text_8nkvkd9i'),  // description text in body
+      Row(
+        mainAxis: MainAxis.end,
+        name: 'CloseButtonRow',
+        children: [
+          IconButton(
+            'close',
+            size: 24,
+            color: Colors.secondaryText,
+            name: 'CloseReportBtn',
+            onTap: NavigateBack(),
+          ),
+        ],
+      ),
+    );
+  });
+
+  // Fix pre-existing preflight on content component: fileUploadCallBack param
+  // declared but never referenced. Hidden Container + ensureActions resolves it.
+  // Also adds the report-issue flag button just above the chat input card so it
+  // appears visually "below the last AI message" (the message list scrolls above
+  // the input overlay). The flag is left-aligned — matching AI messages, not the
+  // right-aligned human messages.
+  app.editComponent('content', (component) {
+    component.ensureInsertedInto(
+      component.findByKey('Column_7ez55xhe'),
+      Container(
+        visible: false,
+        name: 'FileCallbackRef',
+      ),
+    );
+    component.ensureActions(
+      component.findByName('FileCallbackRef'),
+      triggerType: FFActionTriggerType.ON_TAP,
+      actions: [ParamAction('fileUploadCallBack')],
+    );
+
+    // Report flag: inserted above the input card (Container_jrao8o2l).
+    // Appears at the bottom of the chat area, below where AI messages end,
+    // left-aligned so it's clearly not associated with right-aligned human msgs.
+    component.ensureInsertedBefore(
+      component.findByKey('Container_jrao8o2l'),
+      IconButton(
+        'outlined_flag',
+        size: 18,
+        color: Colors.secondaryText,
+        name: 'ContentFlagBtn',
+        onTap: Navigate('ReportIssuePage'),
+      ),
+    );
+  });
+
+  // ── Existing edits (pub deps + custom widgets) ───────────────────────────
+
   // 1. Pub dependencies — guarded against duplicate errors on rerun
   app.raw((project) {
     if (findPubDependency(project, name: 'webview_flutter') == null) {
