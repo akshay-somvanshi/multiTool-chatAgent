@@ -1,5 +1,6 @@
 # from agent import agent
 from chat_agent.classifier import classifier
+from chat_agent import whatsapp
 # from tools import ToolList, search_input
 from google import genai
 
@@ -93,6 +94,11 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# WhatsApp channel: inject the shared classifier singleton and mount the webhook
+# router (GET/POST /webhook/whatsapp). The router uses text_only=True replies.
+whatsapp.set_classifier(classifier)
+app.include_router(whatsapp.router)
 
 class ChatIn(BaseModel):
     message: str = Field(description="User message")
